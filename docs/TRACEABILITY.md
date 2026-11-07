@@ -1,0 +1,60 @@
+# Requirement traceability: FRD v1.0 to implementation
+
+Status of the **Phase 1 MVP vertical slice** (FRD §13) as implemented in `backend/` and `frontend/`.
+"Done" means the stated acceptance behaviour is covered by an automated test. It does
+**not** mean the release gates in §11 are met: those need real permissioned documents,
+PostgreSQL row-level security (RLS), and pilot measurements.
+
+| ID | Requirement | Status | Where / tests |
+|----|-------------|--------|---------------|
+| FR01 | Project access | **Done (app layer)**. Every route resolves the live membership. Non-members and missing objects get the same `AUTH_FORBIDDEN`. Revocation takes effect on the next request. PostgreSQL RLS is **not yet** added (NF01). | `services/access.py`; `test_second_organisation_cannot_access_any_object`, `test_revoked_member_loses_access_immediately` |
+| FR02 | Project configuration | **Done**. Changes create config revisions that record actor and time. Polygons are validated with diagnostics. The project CRS is never assigned to input data. | `services/projects.py`; `test_config_revisions_*`, `test_project_crs_is_not_assigned_to_input_data` |
+| FR03 | Resumable uploads | **Done**. Upload sessions honour an Idempotency-Key and track confirmed byte ranges. Each chunk and the whole file are SHA-256 checked. Uploads require a rights confirmation and expire after 7 days. Quarantine works. The malware scanner is a **stub** that only detects the EICAR test signature; it must be replaced with ClamAV or a managed scanner. | `services/uploads.py`; `test_interrupt_at_40_percent_and_resume`, `test_malware_quarantine_prevents_parsing` |
+| FR04 | Duplicates and versions | **Done**. Identical bytes in the same project prompt reuse. A replacement must be named explicitly and links a new version. Older evidence still opens. Dedup is never visible across tenants. | `test_duplicate_bytes_*`, `test_no_cross_tenant_dedup_visibility`, `test_replacement_marks_prior_records_stale_*` |
+| FR05 | Processing jobs | **Done (inline executor)**. Each page is an idempotent task with 3 retries and backoff. Jobs support selective retry, cancel and a manifest. A durable queue and sandboxed workers are still to come (NF05). | `services/processing.py`; `test_failed_page_retry_without_duplicate_candidates` |
+| FR06 | Document and OCR extraction | **Partial**. Text-layer PDFs give page text and character-offset anchors. Pages without text are flagged `OCR_REQUIRED`. There is **no OCR worker yet** (OCRmyPDF/Tesseract) and **no word boxes yet** (anchors carry the info-level `BBOX_UNAVAILABLE` issue). | `test_page_without_text_is_flagged_*`, `test_pdf_candidates_link_to_page_regions` |
+| FR07 | Structured import preview | **Done**. CSV and XLSX support delimiter, encoding, sheet and header choice, and column and unit mapping. The preview reports row counts and issues. Commit is keyed to the preview hash and is idempotent. Formulas are never executed: cached values are used, and a missing cached value must be supplied. Macros and external links are rejected. | `services/imports.py`; `test_import_preview_*`, `test_xlsx_formulas_*`, `test_macro_workbook_rejected` |
+| FR08 | Candidate extraction | **Partial**. Candidates are schema-constrained, record their method and uncertainty, and keep field-level anchors. The PDF extractor is a deterministic line-pattern baseline; the language-model structured extractor with its retry-then-manual path is not built yet. | `services/records.create_candidate`, `services/processing.run_task` |
+| FR09 | Scientific validation | **Done**. Validation uses versioned unit, analyte and rules registries. LT/GT qualifiers are preserved. Ambiguous or unknown units, decimal commas, BDL without a limit and the negative-value convention are all blocked. Oxide factors are gated by approval. Critical issues block approval; warnings must be acknowledged. | `science/`, `services/records.validate`; `test_science.py`, `test_critical_issue_blocks_and_warning_needs_ack` |
+| FR10 | Coordinate validation | **Done**. The CRS and axis order must be confirmed. The PROJ pipeline and accuracy are kept. A missing datum grid blocks the transform. Points outside the boundary are flagged, not moved. Missing coordinates never become (0,0). | `science/crs.py`; `test_coordinate_blocks`, `test_known_utm_fixture_*`, `test_outside_boundary_flagged_not_moved` |
+| FR11 | Human review | **Done (API and UI)**. Revisions are immutable and corrections show a before/after diff. Self-approval is blocked. Optimistic locking returns 409. Bulk review reports failures per row. The review workspace shows evidence and fields side by side, supports bulk approval of homogeneous batches, and has keyboard navigation. | `test_reviewer_corrects_decimal_*`, `test_concurrent_edit_*`, `test_bulk_partial_failure_*` |
+| FR12 | Identity and conflicts | **Done**. Competing results are grouped by sample, analyte and basis. They are never auto-merged and a governing result is never auto-selected. Choosing one needs an approved result and a written rationale. A new member re-opens the decision without replacing the current governing result. Agreeing duplicates count once. | `services/records.refresh_conflicts`; `test_revised_certificate_*`, `test_resolving_conflict_*`, `test_agreeing_certificates_count_once` |
+| FR13 | Source viewer | **Done**. The API returns the anchor locator, raw value and page context, plus a short-lived HMAC-signed view link that is re-authorised on every use. The UI highlights the anchored text on the page, shows the exact cell and raw value, and opens the original page (PDF `#page=`). Because the link is signed and short-lived, it works in a new tab; it is refused if the request identifies as a different user. | `services/exports.anchor_view`; milestone tests |
+| FR14 | Search and filters | **Partial**. Exact sample-ID and certificate search, full-text page search, and record filters for analyte, lab, campaign, method, status and missing coordinates all work. Semantic search reports `unavailable` and falls back as specified. Filtering by date is not yet supported. | `services/queries.search` |
+| FR15 | Project map | **Done**. Only approved points are returned as GeoJSON, with a bbox filter, an unmapped count and a censored-value flag for symbolisation. The MapLibre UI draws censored results with their own symbol and shows uncertainty circles. Rectangle selection scopes threshold questions, the table and map selection are linked, and unmapped samples are listed. There is a table-only mode and a basemap-failure fallback. | `services/queries.features`; `test_map_shows_*` |
+| FR16 | Numerical query tools | **Done**. Tools are typed, allowlisted and read-only: threshold, missing coordinates, and methods and units. Threshold queries use three-valued censored comparison. Mixed basis triggers a clarification. Snapshots are frozen, reproducible and can be re-run. No SQL is generated. | `services/queries.py`; milestone tests, `test_tools_are_allowlisted`, `test_mixed_basis_*` |
+| FR17 | Evidence-based answers | **Partial**. Structured answers keep source statements, calculations and interpretations separate, and every citation must resolve. With no provider configured, narrative questions return search results only and no generated text. The language-model adapter is only an interface. | `services/queries.ask`; `test_narrative_question_without_provider_*` |
+| FR18 | Targets and checklists (P1) | Not started | |
+| FR19 | Correction and stale evidence | **Done**. Corrections create revisions. Approvals, governing-result changes and source replacement mark cached answers and records stale. Historical snapshots can still be re-run. | `test_resolving_conflict_*`, `test_replacement_marks_prior_records_stale_*` |
+| FR20 | Exports | **Done (CSV, GeoJSON)**. Exports need a separate grant, which is checked again at download. Each export is a ZIP with data and a manifest. The manifest records filters, units, comparators, record and revision IDs, anchors, source SHA-256 hashes, the unmapped count and unresolved counts. Viewers get coordinates withheld. CSV formulas are escaped. GeoPackage export is P1. | `services/exports.py`; `test_export_with_provenance_manifest` |
+| FR21 | Audit | **Done**. Events are append-only and written in the same transaction as the change, so a logging failure rolls the change back. Updates and deletes are refused at the ORM layer. Only admins can read the audit log. Database-level immutability is still to come (revoked UPDATE/DELETE grants). | `services/audit.py`; `test_audit_reconstructs_history_and_is_immutable` |
+| FR22 | Retention and deletion | **Not started**. Needs tombstone manifests and cascades across objects, anchors, caches and exports. | |
+| FR23–FR26 | DOCX/GeoPackage/GeoTIFF, drilling, offline capture, georeferencing (P1/P2) | Not started | |
+
+## Screens (FRD §8)
+
+All nine screens in the FRD §8 inventory are implemented in `frontend/src/pages/`. They are verified by unit tests (`npm test`) and by `frontend/e2e/milestone.cjs`, a browser walkthrough of the §13 milestone with the real backend:
+1. An analyst maps and imports a CSV, and the `ppt` result is flagged critical.
+2. A reviewer approves records and saves a correction. Self-approval is blocked in the UI.
+3. A second reviewer approves the correction.
+4. The certificate conflict is resolved with a rationale.
+5. The earlier answer shows as stale, and the fresh answer excludes the superseded result.
+6. The evidence drawer opens the exact cells, and an export is downloaded.
+7. A user from another organisation sees no projects.
+
+Not yet done: a full WCAG audit (keyboard paths exist and contrast is checked visually only), offline drafts (P2), and the PDF word-box overlay (needs word boxes from OCR).
+
+## Non-functional requirements
+
+| ID | Status |
+|----|--------|
+| NF01 Isolation | Application-layer checks on every route, plus tenant-scoped object keys. **Still to do:** PostgreSQL RLS with a non-owner runtime role, and adversarial tests that cover caches, workers and prompt injection. |
+| NF02 Identity | **Development stub only** (`X-User-Id` header and the web client's user picker; `AJGEM_DEV_LOGIN=0` disables the picker). Must be replaced by managed OIDC with MFA for admins and reviewers before any real data is loaded. |
+| NF05 Untrusted files | Formulas, macros and external links are never executed, and file signatures are checked. **Still to do:** sandboxed parsers with CPU, memory and network limits. |
+| NF14 Deployment integrity | Dependencies are pinned. **Still to do:** Alembic migrations (`create_all` is a development convenience only), and CI. |
+| Others (NF03, NF04, NF06–NF13) | Not started. These are infrastructure and pilot concerns. |
+
+## Open verification items carried from the FRD
+
+* The Li to Li2O factor `2.153` ships **unapproved** (`Li-Li2O-2026.11-draft`). A reviewer must activate it per organisation, and the atomic-weight source still needs independent verification (FRD §6).
+* The Minna-datum transforms used in Nigeria have several candidate pipelines. The system takes PROJ's best one, but it records `MULTIPLE_TRANSFORMATIONS_AVAILABLE` so the reviewer can see the choice.
