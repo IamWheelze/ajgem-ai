@@ -300,3 +300,8 @@ table.data th.num { font-family: inherit; font-size: 12px; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-head p { font-size: 13px; }
 }
+
+/* page image with anchored region (OCR word boxes) */
+.page-image { max-height: 460px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.page-image img { display: block; width: 100%; height: auto; }
+.page-mark { position: absolute; border: 2px solid var(--accent); background: color-mix(in srgb, var(--highlight) 45%, transparent); border-radius: 3px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }

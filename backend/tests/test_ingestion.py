@@ -212,4 +212,8 @@ def test_page_without_text_is_flagged_not_reported_empty(team):
     up = team["analyst"].upload(team["pid"], make_pdf(pages), "mixed.pdf").json()
     job = team["analyst"].get(f"/jobs/{up['job_id']}").json()
     p2 = [u for u in job["manifest"]["units"] if u["unit"] == "page:0001"][0]
-    assert p2["state"] == "flagged" and p2["issues"][0]["code"] == "OCR_REQUIRED"
+    # Blank page: OCR finds nothing (or, without an OCR engine, the page needs OCR). Either way it is flagged.
+    from ajgem.services import ocr
+
+    expected = "OCR_NO_TEXT" if ocr.tesseract_version() else "OCR_REQUIRED"
+    assert p2["state"] == "flagged" and p2["issues"][0]["code"] == expected

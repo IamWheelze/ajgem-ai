@@ -9,7 +9,7 @@ calculations are mandatory.
 This repository holds the **Phase 1 vertical slice** (FRD §13): a FastAPI backend and a React +
 MapLibre web client covering the FRD §8 screen inventory. See
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for the status of each requirement and what is
-deliberately not built yet. The main gaps are OCR, the language-model adapters, PostgreSQL RLS,
+deliberately not built yet. The main gaps are the language-model adapters, PostgreSQL RLS,
 managed identity, and retention and deletion.
 
 ## What the slice does
@@ -17,8 +17,10 @@ managed identity, and retention and deletion.
 1. **Upload**. Uploads are resumable and chunked, with SHA-256 verification, a rights
    confirmation and a malware-scan hook. Stored originals are immutable and content-addressed
    per tenant. Duplicate bytes prompt reuse, and a replacement must be named explicitly.
-2. **Extract**. PDF text-layer pages become page- and offset-anchored assay candidates. Pages
-   without text are flagged for OCR. CSV and XLSX imports go through a guided mapping and a
+2. **Extract**. PDF text-layer pages become page- and offset-anchored assay candidates. Scanned pages
+   are read with Tesseract OCR: candidates are anchored to word boxes on the page image, with their
+   confidence, and every OCR'd figure must be checked against the image before approval.
+   CSV and XLSX imports go through a guided mapping and a
    preview, and then an idempotent commit keyed to the preview hash. Formulas are never executed.
 3. **Validate**. Validation is versioned for units (`%`, `ppm`, `ppb`, `g/t`), analytes,
    `<`/`>` qualifiers, detection limits, basis, CRS and axis order, and the project boundary.
@@ -83,6 +85,12 @@ python -m venv .venv && . .venv/bin/activate
 ```bash
 pip install -r requirements-dev.txt
 ```
+
+```bash
+sudo apt-get install -y tesseract-ocr tesseract-ocr-eng
+```
+
+Tesseract is optional. Without it, scanned pages are flagged for manual entry, and the OCR tests that need the real engine are skipped.
 
 ```bash
 python -m pytest

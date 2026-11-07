@@ -26,6 +26,7 @@ class Settings:
     task_retries: int = 3
     retry_backoff_seconds: float = 0.5
     query_row_limit: int = 50_000
+    ocr_timeout_seconds: int = 120
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 

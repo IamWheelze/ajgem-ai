@@ -357,6 +357,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(data, media_type=mt, headers={"Content-Disposition": f'inline; filename="{name}"',
                                                       "Cache-Control": "private, no-store"})
 
+    @app.get("/sources/{vid}/pages/{page_index}.png")
+    def page_png(vid: str, page_index: int, token: str, u: str, x_user_id: str | None = Header(default=None),
+                 s: Session = Depends(db)):
+        if x_user_id is not None and x_user_id != u:
+            raise forbidden()
+        p = load_principal(s, u)
+        a, _ = via(DocumentVersion, vid, s, p)
+        png = exports_svc.page_image(s, ctx, a, vid, page_index, token)
+        return Response(png, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
     # ------------------------------------------------------------ exports
     @app.post("/projects/{pid}/exports", status_code=201)
     def create_export(pid: str, body: S.ExportIn, s: Session = Depends(db), p: Principal = Depends(principal)):

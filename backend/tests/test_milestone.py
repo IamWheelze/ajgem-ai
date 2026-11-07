@@ -190,8 +190,10 @@ def test_pdf_candidates_link_to_page_regions(milestone):
     assert {r["data"]["sample_id"] for r in recs} == {"KW-001", "KW-002", "KW-003"}
     for r in recs:
         assert r["status"] == "needs_review" and r["extraction_method"] == "pattern-assay-v1"
-        a = an.get(f"/sources/{m['report']['version_id']}/anchors/{r['field_anchors']['result_raw'][0]}").json()
+        a = an.get(f"/sources/{m['report']['version_id']}/anchors/{r['field_anchors']['sample_id'][0]}").json()
         assert a["anchor"]["page_index"] == 7 and r["data"]["sample_id"] in a["anchor"]["raw_text"]
+        res = an.get(f"/anchors/{r['field_anchors']['result_raw'][0]}").json()["anchor"]
+        assert res["raw_text"].replace(" ", "") == r["data"]["result_raw"]  # result field points at the exact token
         assert a["context"] and "Certificate No" in a["context"]
 
 
