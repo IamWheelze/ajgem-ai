@@ -1,6 +1,6 @@
 # Requirement traceability: FRD v1.0 to implementation
 
-Status of the **Phase 1 MVP vertical slice** (FRD §13) as implemented in `backend/`.
+Status of the **Phase 1 MVP vertical slice** (FRD §13) as implemented in `backend/` and `frontend/`.
 "Done" means the stated acceptance behaviour is covered by an automated test. It does
 **not** mean the release gates in §11 are met: those need real permissioned documents,
 PostgreSQL row-level security (RLS), and pilot measurements.
@@ -17,11 +17,11 @@ PostgreSQL row-level security (RLS), and pilot measurements.
 | FR08 | Candidate extraction | **Partial**. Candidates are schema-constrained, record their method and uncertainty, and keep field-level anchors. The PDF extractor is a deterministic line-pattern baseline; the language-model structured extractor with its retry-then-manual path is not built yet. | `services/records.create_candidate`, `services/processing.run_task` |
 | FR09 | Scientific validation | **Done**. Validation uses versioned unit, analyte and rules registries. LT/GT qualifiers are preserved. Ambiguous or unknown units, decimal commas, BDL without a limit and the negative-value convention are all blocked. Oxide factors are gated by approval. Critical issues block approval; warnings must be acknowledged. | `science/`, `services/records.validate`; `test_science.py`, `test_critical_issue_blocks_and_warning_needs_ack` |
 | FR10 | Coordinate validation | **Done**. The CRS and axis order must be confirmed. The PROJ pipeline and accuracy are kept. A missing datum grid blocks the transform. Points outside the boundary are flagged, not moved. Missing coordinates never become (0,0). | `science/crs.py`; `test_coordinate_blocks`, `test_known_utm_fixture_*`, `test_outside_boundary_flagged_not_moved` |
-| FR11 | Human review | **Done (API)**. Revisions are immutable and corrections show a before/after diff. Self-approval is blocked. Optimistic locking returns 409. Bulk review reports failures per row. The side-by-side review UI is not built. | `test_reviewer_corrects_decimal_*`, `test_concurrent_edit_*`, `test_bulk_partial_failure_*` |
+| FR11 | Human review | **Done (API and UI)**. Revisions are immutable and corrections show a before/after diff. Self-approval is blocked. Optimistic locking returns 409. Bulk review reports failures per row. The review workspace shows evidence and fields side by side, supports bulk approval of homogeneous batches, and has keyboard navigation. | `test_reviewer_corrects_decimal_*`, `test_concurrent_edit_*`, `test_bulk_partial_failure_*` |
 | FR12 | Identity and conflicts | **Done**. Competing results are grouped by sample, analyte and basis. They are never auto-merged and a governing result is never auto-selected. Choosing one needs an approved result and a written rationale. A new member re-opens the decision without replacing the current governing result. Agreeing duplicates count once. | `services/records.refresh_conflicts`; `test_revised_certificate_*`, `test_resolving_conflict_*`, `test_agreeing_certificates_count_once` |
-| FR13 | Source viewer | **API done**. The API returns the anchor locator, raw value and page context, plus a short-lived HMAC-signed view link that is re-authorised on every use. The PDF highlight UI is not built. | `services/exports.anchor_view`; milestone tests |
+| FR13 | Source viewer | **Done**. The API returns the anchor locator, raw value and page context, plus a short-lived HMAC-signed view link that is re-authorised on every use. The UI highlights the anchored text on the page, shows the exact cell and raw value, and opens the original page (PDF `#page=`). Because the link is signed and short-lived, it works in a new tab; it is refused if the request identifies as a different user. | `services/exports.anchor_view`; milestone tests |
 | FR14 | Search and filters | **Partial**. Exact sample-ID and certificate search, full-text page search, and record filters for analyte, lab, campaign, method, status and missing coordinates all work. Semantic search reports `unavailable` and falls back as specified. Filtering by date is not yet supported. | `services/queries.search` |
-| FR15 | Project map | **API done**. Only approved points are returned as GeoJSON, with a bbox filter, an unmapped count and a censored-value flag for symbolisation. The MapLibre UI is not built. | `services/queries.features`; `test_map_shows_*` |
+| FR15 | Project map | **Done**. Only approved points are returned as GeoJSON, with a bbox filter, an unmapped count and a censored-value flag for symbolisation. The MapLibre UI draws censored results with their own symbol and shows uncertainty circles. Rectangle selection scopes threshold questions, the table and map selection are linked, and unmapped samples are listed. There is a table-only mode and a basemap-failure fallback. | `services/queries.features`; `test_map_shows_*` |
 | FR16 | Numerical query tools | **Done**. Tools are typed, allowlisted and read-only: threshold, missing coordinates, and methods and units. Threshold queries use three-valued censored comparison. Mixed basis triggers a clarification. Snapshots are frozen, reproducible and can be re-run. No SQL is generated. | `services/queries.py`; milestone tests, `test_tools_are_allowlisted`, `test_mixed_basis_*` |
 | FR17 | Evidence-based answers | **Partial**. Structured answers keep source statements, calculations and interpretations separate, and every citation must resolve. With no provider configured, narrative questions return search results only and no generated text. The language-model adapter is only an interface. | `services/queries.ask`; `test_narrative_question_without_provider_*` |
 | FR18 | Targets and checklists (P1) | Not started | |
@@ -31,12 +31,25 @@ PostgreSQL row-level security (RLS), and pilot measurements.
 | FR22 | Retention and deletion | **Not started**. Needs tombstone manifests and cascades across objects, anchors, caches and exports. | |
 | FR23–FR26 | DOCX/GeoPackage/GeoTIFF, drilling, offline capture, georeferencing (P1/P2) | Not started | |
 
+## Screens (FRD §8)
+
+All nine screens in the FRD §8 inventory are implemented in `frontend/src/pages/`. They are verified by unit tests (`npm test`) and by `frontend/e2e/milestone.cjs`, a browser walkthrough of the §13 milestone with the real backend:
+1. An analyst maps and imports a CSV, and the `ppt` result is flagged critical.
+2. A reviewer approves records and saves a correction. Self-approval is blocked in the UI.
+3. A second reviewer approves the correction.
+4. The certificate conflict is resolved with a rationale.
+5. The earlier answer shows as stale, and the fresh answer excludes the superseded result.
+6. The evidence drawer opens the exact cells, and an export is downloaded.
+7. A user from another organisation sees no projects.
+
+Not yet done: a full WCAG audit (keyboard paths exist and contrast is checked visually only), offline drafts (P2), and the PDF word-box overlay (needs word boxes from OCR).
+
 ## Non-functional requirements
 
 | ID | Status |
 |----|--------|
 | NF01 Isolation | Application-layer checks on every route, plus tenant-scoped object keys. **Still to do:** PostgreSQL RLS with a non-owner runtime role, and adversarial tests that cover caches, workers and prompt injection. |
-| NF02 Identity | **Development stub only** (`X-User-Id` header). Must be replaced by managed OIDC with MFA for admins and reviewers before any real data is loaded. |
+| NF02 Identity | **Development stub only** (`X-User-Id` header and the web client's user picker; `AJGEM_DEV_LOGIN=0` disables the picker). Must be replaced by managed OIDC with MFA for admins and reviewers before any real data is loaded. |
 | NF05 Untrusted files | Formulas, macros and external links are never executed, and file signatures are checked. **Still to do:** sandboxed parsers with CPU, memory and network limits. |
 | NF14 Deployment integrity | Dependencies are pinned. **Still to do:** Alembic migrations (`create_all` is a development convenience only), and CI. |
 | Others (NF03, NF04, NF06–NF13) | Not started. These are infrastructure and pilot concerns. |

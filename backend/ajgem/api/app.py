@@ -8,14 +8,19 @@ from collections.abc import Iterator
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..context import Context, Settings
 from ..db import Base, make_engine, make_session_factory
 from ..errors import ApiError, forbidden
 from ..models import (
+    AnswerSnapshot,
     AuditEvent,
+    Document,
+    Membership,
+    Organisation,
+    User,
     ConflictGroup,
     DocumentVersion,
     Export,
@@ -121,6 +126,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         projects.revoke_member(s, project_access(s, p, pid), uid)
         return Response(status_code=204)
 
+    @app.get("/projects/{pid}/factors")
+    def factors(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        project_access(s, p, pid)
+        reg = projects.registry_for(s, p.organisation_id)
+        return {"registry": reg.version, "factors": [
+            {"element": f.element, "oxide": f.oxide, "factor": str(f.factor), "version": f.version,
+             "provenance": f.provenance, "approved": f.approved, "approved_by": f.approved_by} for f in reg.factors.values()]}
+
     @app.post("/projects/{pid}/factor-approvals", status_code=201)
     def approve_factor(pid: str, body: S.FactorApprovalIn, s: Session = Depends(db), p: Principal = Depends(principal)):
         fa = projects.approve_factor(s, project_access(s, p, pid), body.element, body.oxide)
@@ -187,6 +200,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         a, _ = via(DocumentVersion, vid, s, p)
         pv = imports_svc.preview(s, ctx, a, vid, body.mapping)
         return {"id": pv.id, "preview_hash": pv.preview_hash, "report": pv.report}
+
+    @app.get("/versions/{vid}/table")
+    def table_head(vid: str, sheet: str | None = None, header_row: int = 1, delimiter: str | None = None,
+                   encoding: str | None = None, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(DocumentVersion, vid, s, p)
+        return imports_svc.inspect(s, ctx, a, vid, sheet, header_row, delimiter, encoding)
 
     @app.post("/imports/{iid}/commit")
     def import_commit(iid: str, body: S.CommitIn, s: Session = Depends(db), p: Principal = Depends(principal)):
@@ -318,8 +337,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         a, _ = via(DocumentVersion, vid, s, p)
         return exports_svc.anchor_view(s, ctx, a, vid, aid)
 
+    @app.get("/anchors/{aid}")
+    def anchor_by_id(aid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        from ..models import SourceAnchor
+
+        a, obj = via(SourceAnchor, aid, s, p)
+        return exports_svc.anchor_view(s, ctx, a, obj.version_id, aid)
+
     @app.get("/sources/{vid}/content")
-    def content(vid: str, token: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+    def content(vid: str, token: str, u: str, x_user_id: str | None = Header(default=None), s: Session = Depends(db)):
+        # Authenticated by the short-lived signed token bound to user and version; the
+        # user's live project membership is still re-checked. A request that identifies
+        # as a different user is refused, so a leaked link cannot be replayed by another session.
+        if x_user_id is not None and x_user_id != u:
+            raise forbidden()
+        p = load_principal(s, u)
         a, _ = via(DocumentVersion, vid, s, p)
         data, mt, name = exports_svc.source_bytes(s, ctx, a, vid, token)
         return Response(data, media_type=mt, headers={"Content-Disposition": f'inline; filename="{name}"',
@@ -347,5 +379,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"events": [{"id": e.id, "at": e.created_at.isoformat(), "actor": e.actor_id, "action": e.action,
                             "entity_type": e.entity_type, "entity_id": e.entity_id, "before": e.before_ref,
                             "after": e.after_ref, "detail": e.detail} for e in evs]}
+
+    # ------------------------------------------------------------ read models for the web client
+    @app.get("/me")
+    def me(s: Session = Depends(db), p: Principal = Depends(principal)):
+        u, org = s.get(User, p.user_id), s.get(Organisation, p.organisation_id)
+        return {"id": u.id, "email": u.email, "name": u.name, "organisation": {"id": org.id, "name": org.name}}
+
+    @app.get("/dev/users")
+    def dev_users(s: Session = Depends(db)):
+        if not settings.dev_login:
+            raise forbidden()
+        rows = s.execute(select(User, Organisation).join(Organisation, Organisation.id == User.organisation_id)
+                         .order_by(Organisation.name, User.email)).all()
+        return {"users": [{"id": u.id, "email": u.email, "name": u.name, "organisation": o.name} for u, o in rows]}
+
+    @app.get("/org/users")
+    def org_users(s: Session = Depends(db), p: Principal = Depends(principal)):
+        us = s.scalars(select(User).where(User.organisation_id == p.organisation_id).order_by(User.email))
+        return {"users": [{"id": u.id, "email": u.email, "name": u.name} for u in us]}
+
+    @app.get("/projects/{pid}/members")
+    def members(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        project_access(s, p, pid, "project.manage")
+        rows = s.execute(select(Membership, User).join(User, User.id == Membership.user_id)
+                         .where(Membership.project_id == pid).order_by(User.email)).all()
+        return {"members": [{"user_id": u.id, "email": u.email, "roles": m.roles, "can_export": m.can_export,
+                             "can_export_exact_coordinates": m.can_export_exact_coordinates,
+                             "revoked": m.revoked_at is not None,
+                             "expires_at": m.expires_at.isoformat() if m.expires_at else None} for m, u in rows]}
+
+    @app.get("/projects/{pid}/summary")
+    def summary(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a = project_access(s, p, pid)
+        recs = s.execute(select(Record.kind, Record.status, func.count()).where(Record.project_id == pid)
+                         .group_by(Record.kind, Record.status)).all()
+        counts: dict = {}
+        for kind, status, n in recs:
+            if status != "approved" and not a.can("records.read_drafts"):
+                continue
+            counts.setdefault(kind, {})[status] = n
+        stale = s.scalar(select(func.count()).select_from(Record).where(Record.project_id == pid, Record.stale.is_(True)))
+        conflicts = s.execute(select(ConflictGroup.status, func.count()).where(ConflictGroup.project_id == pid)
+                              .group_by(ConflictGroup.status)).all()
+        jobs = s.execute(select(Job.state, func.count()).where(Job.project_id == pid).group_by(Job.state)).all()
+        docs = s.scalar(select(func.count()).select_from(Document).where(Document.project_id == pid))
+        stale_answers = s.scalar(select(func.count()).select_from(AnswerSnapshot)
+                                 .where(AnswerSnapshot.project_id == pid, AnswerSnapshot.state != "current"))
+        fc = queries.features(s, a)
+        return {"project": {"id": pid, "name": a.project.name}, "roles": sorted(a.roles),
+                "can_export": a.membership.can_export, "records": counts, "stale_records": stale,
+                "conflicts": dict(conflicts) if a.can("records.read_drafts") else {},
+                "jobs": dict(jobs), "documents": docs, "stale_answers": stale_answers,
+                "mapped_samples": len(fc["features"]), "unmapped_samples": fc["unmapped_count"]}
+
+    @app.get("/projects/{pid}/documents")
+    def documents(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        project_access(s, p, pid)
+        docs = s.scalars(select(Document).where(Document.project_id == pid).order_by(Document.created_at.desc()))
+        return {"documents": [{"id": d.id, "title": d.title, "versions": [
+            {"id": v.id, "version_no": v.version_no, "filename": v.filename, "format": v.detected_format,
+             "status": v.status, "sha256": v.sha256, "size": v.size, "scan_status": v.scan_status,
+             "created_at": v.created_at.isoformat()} for v in d.versions]} for d in docs]}
+
+    @app.get("/projects/{pid}/jobs")
+    def jobs(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        project_access(s, p, pid)
+        js = s.scalars(select(Job).where(Job.project_id == pid).order_by(Job.created_at.desc()).limit(100))
+        return {"jobs": [dict(processing.job_view(j), created_at=j.created_at.isoformat()) for j in js]}
+
+    @app.get("/projects/{pid}/exports")
+    def list_exports(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a = project_access(s, p, pid)
+        if not a.membership.can_export:
+            return {"exports": []}
+        es = s.scalars(select(Export).where(Export.project_id == pid).order_by(Export.created_at.desc()).limit(100))
+        return {"exports": [{"id": e.id, "format": e.format, "purpose": e.purpose, "created_at": e.created_at.isoformat(),
+                             "manifest": e.manifest} for e in es]}
+
+    @app.get("/projects/{pid}/answers")
+    def list_answers(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        project_access(s, p, pid, "query.run")
+        snaps = s.scalars(select(AnswerSnapshot).where(AnswerSnapshot.project_id == pid)
+                          .order_by(AnswerSnapshot.created_at.desc()).limit(50))
+        return {"answers": [{"id": x.id, "question": x.question, "state": x.state, "stale_reason": x.stale_reason,
+                             "created_at": x.created_at.isoformat(), "counts": x.result.get("counts")} for x in snaps]}
 
     return app

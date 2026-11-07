@@ -55,7 +55,8 @@ def milestone(team):
     # 3. A separate reviewer approves the CSV records (bulk) – far more than ten.
     recs = [x for x in _records(an, pid, limit=500) if x["source_version_id"] == table["version_id"]]
     items = [{"record_id": x["id"], "expected_revision_no": x["current_revision_no"]} for x in recs]
-    res = r1.post(f"/projects/{pid}/reviews/bulk", json={"items": items, "decision": "approve"})
+    res = r1.post(f"/projects/{pid}/reviews/bulk", json={"items": items, "decision": "approve",
+                                                         "acknowledge_warnings": ["THOUSANDS_SEPARATOR_REMOVED"]})
     assert res.status_code == 200 and not res.json()["failed"], res.text
 
     # 4. One field sample with unknown CRS: approved with acknowledgement but stays unmapped.
@@ -89,6 +90,7 @@ def test_revised_certificate_creates_visible_conflict(milestone):
     assert len(li) == 1 and li[0]["status"] == "open" and li[0]["governing_record_id"] is None
     certs = sorted(x["certificate_number"] for x in li[0]["members"])
     assert certs == ["CERT-001", "CERT-001-R1"]
+    assert sorted(x["result_raw"] for x in li[0]["members"]) == ["1,200", "900"]
 
 
 def test_threshold_question_with_conflict_censoring_and_sources(milestone):

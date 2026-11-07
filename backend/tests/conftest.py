@@ -135,7 +135,7 @@ def make_assay_csv(n: int = 100) -> bytes:
     rows = [ASSAY_HEADER]
     for i in range(1, n + 1):
         sid = f"KW-{i:03d}"
-        li = {1: "1,200", 2: "<100"}.get(i, str(150 + i * 7))
+        li = {1: '"1,200"', 2: "<100"}.get(i, str(150 + i * 7))
         rows.append(f"{sid},KW-2026,{335000 + i * 10},{995000 + i * 10},CERT-001,Synthetic Lab,ICP-MS,dry,{li},{20 + i}")
     return ("\n".join(rows) + "\n").encode()
 

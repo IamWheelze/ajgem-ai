@@ -153,7 +153,7 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
             ref,
             analyte=rec_analyte.code, result_raw=d["result_raw"], comparator=qv.comparator.value,
             value=str(qv.value), unit=d["unit"], basis=basis, method=d.get("method"),
-            compared_value=str(in_unit.value.normalize()), compared_unit=q_unit, derived=derived,
+            compared_value=plain(in_unit.value), compared_unit=q_unit, derived=derived,
             outcome=outcome.value, anchor_ids=rv.anchor_ids, stale=r.stale,
         )
         if report_as and report_as != rec_analyte.code:
@@ -186,8 +186,11 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
         "unmapped_matching_samples": sum(1 for r in rows if r["outcome"] == "YES" and not r["mapped"]),
     }
     if save:
+        q_text = question or _describe(result["query"])
+        if sample_filter is not None:
+            q_text += f" [scope: {len(sample_filter)} selected samples]"
         snap = AnswerSnapshot(organisation_id=access.project.organisation_id, project_id=access.project.id,
-                              question=question or _describe(result["query"]), tool=THRESHOLD_TOOL[0],
+                              question=q_text, tool=THRESHOLD_TOOL[0],
                               tool_version=THRESHOLD_TOOL[1], params=params, inputs=inputs, result=result,
                               analyte_element=element, created_by=access.principal.user_id)
         db.add(snap)
@@ -195,6 +198,12 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
         result["answer_id"] = snap.id
         result["state"] = snap.state
     return result
+
+
+def plain(d: Decimal) -> str:
+    """Exact decimal text without exponent notation or trailing zeros (1450, not 1.45E+3)."""
+    t = format(d.normalize(), "f")
+    return t if t != "-0" else "0"
 
 
 def _same_element(reg, analyte_code: str | None, element: str) -> bool:
@@ -321,6 +330,7 @@ def features(db: Session, access: ProjectAccess, bbox: list[float] | None = None
             "type": "Feature", "id": s.id,
             "geometry": {"type": "Point", "coordinates": [lon, lat]},
             "properties": {"record_id": s.id, "revision_id": rev.id, "sample_id": rev.data.get("sample_id"),
+                           "sample_key": s.sample_key, "campaign": rev.data.get("campaign"),
                            "uncertainty_m": rev.data.get("uncertainty_m"), "transform": rev.transform,
                            "assays": a, "any_censored": any(x["censored"] for x in a), "anchor_ids": rev.anchor_ids},
         })
@@ -345,6 +355,8 @@ def ask(db: Session, access: ProjectAccess, question: str | None, tool: str | No
     if m:
         op = ">=" if ">=" in question else ">"
         p = {"analyte": m.group("a"), "op": op, "threshold": m.group("t").replace(",", ""), "unit": m.group("u")}
+        # Scope chips from the client (map area, basis, reporting species) refine the routed tool call.
+        p.update({k: v for k, v in (params or {}).items() if k in {"sample_keys", "basis", "report_as"} and v})
         return _wrap(_run_tool(db, access, "assay_threshold", p, question), db)
     if re.search(r"lack|missing|without", question, re.I) and re.search(r"coordinat|location", question, re.I):
         return _wrap(missing_coordinates(db, access), db)

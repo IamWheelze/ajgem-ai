@@ -1,0 +1,181 @@
+/** Administration: members and grants, project configuration, conversion factors, audit (FR01, FR02, FR21). */
+import { useState } from "react";
+import { api, type ProjectDetail } from "../lib/api";
+import { ROLE_LABEL, when } from "../lib/format";
+import { useAction, useResource } from "../lib/hooks";
+import { useProject } from "../components/Layout";
+import { Empty, ErrorNotice, Loading } from "../components/ui";
+
+interface Member { user_id: string; email: string; roles: string[]; can_export: boolean; can_export_exact_coordinates: boolean; revoked: boolean; expires_at: string | null }
+interface AuditEv { id: string; at: string; actor: string; action: string; entity_type: string; entity_id: string; before: string | null; after: string | null; detail: Record<string, unknown> }
+interface Factor { element: string; oxide: string; factor: string; version: string; provenance: string; approved: boolean; approved_by: string | null }
+
+export default function Admin() {
+  const { roles } = useProject();
+  if (!roles.has("admin") && !roles.has("reviewer")) return <div className="page"><ErrorNotice error={new Error("Administration requires the administrator role.")} title="Not permitted" /></div>;
+  return (
+    <div className="page">
+      <div className="page-head"><div><h1>Administration</h1><p>Permissions are per-project grants. Administration does not confer geological review authority.</p></div></div>
+      {roles.has("admin") && <Members />}
+      {roles.has("admin") && <Config />}
+      <Factors />
+      {roles.has("admin") && <Audit />}
+    </div>
+  );
+}
+
+function Members() {
+  const { pid } = useProject();
+  const list = useResource(() => api.get<{ members: Member[] }>(`/projects/${pid}/members`), [pid]);
+  const users = useResource(() => api.get<{ users: { id: string; email: string; name: string }[] }>("/org/users"), []);
+  const [uid, setUid] = useState("");
+  const [rs, setRs] = useState<Set<string>>(new Set(["viewer"]));
+  const [exp, setExp] = useState(false);
+  const [exact, setExact] = useState(false);
+  const add = useAction(async () => {
+    await api.post(`/projects/${pid}/members`, { user_id: uid, roles: [...rs], can_export: exp, can_export_exact_coordinates: exact });
+    list.reload();
+  });
+  const revoke = useAction(async (u: string) => { await api.del(`/projects/${pid}/members/${u}`); list.reload(); });
+  const emailOf = new Map(users.data?.users.map((u) => [u.id, u.email]));
+  return (
+    <section className="card">
+      <div className="card-head"><h2>Members</h2></div>
+      {list.loading && !list.data ? <Loading /> : (
+        <table className="data">
+          <thead><tr><th>User</th><th>Roles</th><th>Export</th><th>Status</th><th /></tr></thead>
+          <tbody>
+            {list.data?.members.map((m) => (
+              <tr key={m.user_id}>
+                <td>{m.email}</td>
+                <td>{m.roles.map((r) => <span key={r} className="badge accent" style={{ marginRight: 4 }}>{ROLE_LABEL[r] ?? r}</span>)}</td>
+                <td>{m.can_export ? (m.can_export_exact_coordinates ? "yes, incl. exact coordinates" : "yes") : <span className="faint">no</span>}</td>
+                <td>{m.revoked ? <span className="badge bad">revoked</span> : <span className="badge ok">active</span>}{m.expires_at && <div className="faint">expires {when(m.expires_at)}</div>}</td>
+                <td>{!m.revoked && <button className="small danger" onClick={() => { if (confirm(`Revoke ${m.email}? Access ends immediately.`)) revoke.run(m.user_id); }}>Revoke</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <form className="card-pad stack" style={{ borderTop: "1px solid var(--border)" }} onSubmit={(e) => { e.preventDefault(); add.run(); }}>
+        <h3>Grant access</h3>
+        <div className="row" style={{ alignItems: "flex-end" }}>
+          <label className="field">User (same organisation)
+            <select value={uid} onChange={(e) => setUid(e.target.value)}>
+              <option value="">Choose…</option>
+              {users.data?.users.map((u) => <option key={u.id} value={u.id}>{u.email}</option>)}
+            </select>
+          </label>
+          {Object.keys(ROLE_LABEL).map((r) => (
+            <label key={r} className="check"><input type="checkbox" checked={rs.has(r)} onChange={(e) => { const s = new Set(rs); if (e.target.checked) s.add(r); else s.delete(r); setRs(s); }} />{ROLE_LABEL[r]}</label>
+          ))}
+        </div>
+        <div className="row">
+          <label className="check"><input type="checkbox" checked={exp} onChange={(e) => setExp(e.target.checked)} />Export grant</label>
+          <label className="check"><input type="checkbox" checked={exact} disabled={!exp} onChange={(e) => setExact(e.target.checked)} />Exact coordinates in exports</label>
+          <button className="primary" disabled={!uid || rs.size === 0 || add.pending}>Grant</button>
+        </div>
+        <ErrorNotice error={add.error ?? revoke.error} />
+        {uid && emailOf.get(uid) && <span className="faint">Granting updates an existing membership's roles if {emailOf.get(uid)} is already a member.</span>}
+      </form>
+    </section>
+  );
+}
+
+function Config() {
+  const { pid } = useProject();
+  const p = useResource(() => api.get<ProjectDetail>(`/projects/${pid}`), [pid]);
+  const [crs, setCrs] = useState<string | null>(null);
+  const [boundary, setBoundary] = useState<string | null>(null);
+  const save = useAction(async () => {
+    let b: unknown = undefined;
+    if (boundary !== null && boundary.trim()) {
+      try { b = JSON.parse(boundary); } catch { throw new Error("Boundary is not valid JSON"); }
+    }
+    await api.put(`/projects/${pid}/config`, { working_crs: crs ?? undefined, boundary: b });
+    setCrs(null); setBoundary(null); p.reload();
+  });
+  const cfg = p.data?.config;
+  return (
+    <section className="card">
+      <div className="card-head"><h2>Project configuration</h2>{cfg && <span className="faint">revision {cfg.revision} · {when(cfg.created_at)}</span>}</div>
+      <div className="card-pad stack">
+        <label className="field">Working CRS (for analysis; never assigned to input data)
+          <input value={crs ?? cfg?.working_crs ?? ""} onChange={(e) => setCrs(e.target.value)} placeholder="EPSG:32632" />
+        </label>
+        <label className="field">Boundary (GeoJSON Polygon/MultiPolygon, WGS 84 lon/lat; administrative context, not proof of rights)
+          <textarea rows={6} value={boundary ?? (cfg?.boundary ? JSON.stringify(cfg.boundary) : "")} onChange={(e) => setBoundary(e.target.value)} />
+        </label>
+        <ErrorNotice error={save.error} />
+        <div><button className="primary" disabled={(crs === null && boundary === null) || save.pending} onClick={save.run}>Save as new revision</button></div>
+      </div>
+    </section>
+  );
+}
+
+function Factors() {
+  const { pid, roles } = useProject();
+  const f = useResource(() => api.get<{ registry: string; factors: Factor[] }>(`/projects/${pid}/factors`), [pid]);
+  const approve = useAction(async (x: Factor) => { await api.post(`/projects/${pid}/factor-approvals`, { element: x.element, oxide: x.oxide }); f.reload(); });
+  return (
+    <section className="card">
+      <div className="card-head"><h2>Conversion factors</h2><span className="faint">{f.data?.registry}</span></div>
+      {!f.data?.factors.length ? <Empty>No factors registered.</Empty> : (
+        <table className="data">
+          <thead><tr><th>Conversion</th><th className="num">Factor</th><th>Version</th><th>Provenance</th><th>Status</th><th /></tr></thead>
+          <tbody>
+            {f.data.factors.map((x) => (
+              <tr key={x.version}>
+                <td>{x.element} → {x.oxide}</td>
+                <td className="num">{x.factor}</td>
+                <td className="mono">{x.version}</td>
+                <td className="faint">{x.provenance}</td>
+                <td>{x.approved ? <span className="badge ok">approved</span> : <span className="badge warn">not approved</span>}</td>
+                <td>{!x.approved && roles.has("reviewer") && <button className="small" onClick={() => { if (confirm(`Activate ${x.version} (×${x.factor}) for your whole organisation? This is recorded in the audit log.`)) approve.run(x); }}>Approve for organisation</button>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="card-pad faint">Oxide equivalents are calculations from reported composition, not mineralogical measurements. The atomic-weight source for each factor must be verified independently before approval.</div>
+      <div className="card-pad" style={{ paddingTop: 0 }}><ErrorNotice error={approve.error} /></div>
+    </section>
+  );
+}
+
+function Audit() {
+  const { pid } = useProject();
+  const a = useResource(() => api.get<{ events: AuditEv[] }>(`/projects/${pid}/audit`), [pid]);
+  const members = useResource(() => api.get<{ members: Member[] }>(`/projects/${pid}/members`), [pid]);
+  const [filter, setFilter] = useState("");
+  const who = new Map(members.data?.members.map((m) => [m.user_id, m.email]));
+  const evs = (a.data?.events ?? []).filter((e) => !filter || e.action.includes(filter)).slice().reverse();
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>Audit log</h2>
+        <input placeholder="filter action (e.g. record.approve)" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: 260 }} />
+      </div>
+      {a.loading && !a.data ? <Loading /> : (
+        <div className="table-wrap" style={{ maxHeight: 420 }}>
+          <table className="data">
+            <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Before → after</th><th>Detail</th></tr></thead>
+            <tbody>
+              {evs.map((e) => (
+                <tr key={e.id}>
+                  <td className="faint">{when(e.at)}</td>
+                  <td>{who.get(e.actor) ?? e.actor.slice(0, 8)}</td>
+                  <td className="mono">{e.action}</td>
+                  <td className="mono faint">{e.entity_type} {e.entity_id.slice(0, 8)}</td>
+                  <td className="mono faint">{e.before || e.after ? `${e.before?.slice(0, 8) ?? "∅"} → ${e.after?.slice(0, 8) ?? "∅"}` : ""}</td>
+                  <td className="faint">{Object.keys(e.detail).length ? JSON.stringify(e.detail).slice(0, 120) : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="card-pad faint">Events are append-only and cannot be edited through the application.</div>
+    </section>
+  );
+}

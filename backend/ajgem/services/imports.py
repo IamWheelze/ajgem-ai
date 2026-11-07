@@ -136,6 +136,27 @@ def read_table(data: bytes, fmt: str, mapping: dict, max_rows: int) -> tuple[lis
     return header, out, meta
 
 
+def inspect(db: Session, ctx: Context, access: ProjectAccess, version_id: str, sheet: str | None = None,
+            header_row: int = 1, delimiter: str | None = None, encoding: str | None = None) -> dict:
+    """Header, sheets and first rows so a user can build a mapping (FR07 wizard step)."""
+    access.require("import.run")
+    v = db.get(DocumentVersion, version_id)
+    if v is None or v.project_id != access.project.id:
+        raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
+    m: dict = {"header_row": header_row}
+    if sheet:
+        m["sheet"] = sheet
+    if delimiter:
+        m["delimiter"] = delimiter
+    if encoding:
+        m["encoding"] = encoding
+    header, rows, meta = read_table(ctx.store.get(v.storage_key), v.detected_format, m, ctx.settings.max_table_rows)
+    sample = [{"row": n, "cells": {h: (c.raw if c.formula is None else f"{c.raw} ({c.formula})") for h, c in cells.items()}}
+              for n, cells in rows[:10]]
+    return {"format": v.detected_format, "header": header, "meta": meta, "row_count": len(rows), "sample_rows": sample,
+            "targets": sorted(MAPPABLE)}
+
+
 def _validate_mapping(mapping: dict, header: list[str]) -> None:
     unknown = set(mapping) - MAPPING_KEYS
     if unknown:

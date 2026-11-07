@@ -37,11 +37,15 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if v.status == "deleted":
         return {"available": False, "reason": "EVIDENCE_DELETED", "message": "Evidence removed; cannot support a claim"}
-    context = None
+    context, highlight = None, None
     if a.kind == "pdf_text":
         pt = db.scalar(select(PageText).where(PageText.version_id == v.id, PageText.page_index == a.page_index))
         if pt and a.text_start is not None:
-            context = pt.text[max(0, a.text_start - 120): (a.text_end or a.text_start) + 120]
+            # Widen to whole lines so the excerpt never starts or ends mid-word.
+            c0 = pt.text.rfind("\n", 0, max(0, a.text_start - 120)) + 1
+            end = pt.text.find("\n", (a.text_end or a.text_start) + 120)
+            context = pt.text[c0: end if end != -1 else len(pt.text)]
+            highlight = [a.text_start - c0, (a.text_end or a.text_start) - c0]
     return {
         "available": True,
         "version": {"id": v.id, "document_id": v.document_id, "version_no": v.version_no, "filename": v.filename,
@@ -50,7 +54,10 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
                    "bbox": a.bbox, "text_start": a.text_start, "text_end": a.text_end, "sheet": a.sheet,
                    "row_number": a.row_number, "column": a.column, "cell_ref": a.cell_ref, "raw_text": a.raw_text},
         "context": context,
-        "view_url": f"/sources/{v.id}/content?token={ctx.signer.sign(v.id, access.principal.user_id)}",
+        "context_highlight": highlight,
+        # Token-authenticated so it can open in a frame or new tab; membership is re-checked on use.
+        "view_url": (f"/sources/{v.id}/content?u={access.principal.user_id}"
+                     f"&token={ctx.signer.sign(v.id, access.principal.user_id)}"),
     }
 
 
