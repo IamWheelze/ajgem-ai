@@ -149,3 +149,21 @@ CSV_MAPPING = {
     "analytes": [{"column": "Li_ppm", "analyte": "Li", "unit": "ppm"},
                  {"column": "Sn_ppm", "analyte": "Sn", "unit": "ppm"}],
 }
+
+
+def make_scanned_pdf(pages: list[list[str]], rotate: int = 0, dpi: int = 200) -> bytes:
+    """Image-only PDF (a simulated scan): text is rendered, rasterised, and re-wrapped with no text layer.
+
+    `rotate` turns each page image counter-clockwise by that many degrees, like a sideways feed.
+    An empty list of lines yields a blank scanned page.
+    """
+    import pypdfium2 as pdfium
+    from PIL import Image
+
+    images = []
+    for page in pdfium.PdfDocument(make_pdf(pages)):
+        img = page.render(scale=dpi / 72).to_pil().convert("L")
+        images.append(img.rotate(rotate, expand=True) if rotate else img)
+    out = io.BytesIO()
+    images[0].save(out, format="PDF", resolution=dpi, save_all=True, append_images=images[1:])
+    return out.getvalue()

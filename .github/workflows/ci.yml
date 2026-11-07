@@ -26,8 +26,10 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: backend/requirements*.txt
+      - name: Install Tesseract OCR
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-eng
       - run: pip install -r requirements-dev.txt
-      - run: python -m pytest
+      - run: python -m pytest -rs
 
   frontend:
     name: Frontend typecheck, unit tests and build
@@ -70,8 +72,10 @@ jobs:
         with:
           name: web-dist
           path: frontend/dist
-      - name: Install backend
-        run: pip install -r backend/requirements-dev.txt
+      - name: Install backend and Tesseract OCR
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-eng
+          pip install -r backend/requirements-dev.txt
       - name: Install Playwright
         working-directory: frontend
         run: |

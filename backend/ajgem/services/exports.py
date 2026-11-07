@@ -37,9 +37,15 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if v.status == "deleted":
         return {"available": False, "reason": "EVIDENCE_DELETED", "message": "Evidence removed; cannot support a claim"}
-    context, highlight = None, None
+    context, highlight, page = None, None, None
     if a.kind == "pdf_text":
         pt = db.scalar(select(PageText).where(PageText.version_id == v.id, PageText.page_index == a.page_index))
+        if pt:
+            q = pt.quality or {}
+            token = ctx.signer.sign(v.id, access.principal.user_id)
+            page = {"method": pt.method, "size": q.get("page_size"), "quality": q,
+                    "image_url": (f"/sources/{v.id}/pages/{a.page_index}.png?u={access.principal.user_id}"
+                                  f"&token={token}")}
         if pt and a.text_start is not None:
             # Widen to whole lines so the excerpt never starts or ends mid-word.
             c0 = pt.text.rfind("\n", 0, max(0, a.text_start - 120)) + 1
@@ -52,13 +58,34 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
                     "sha256": v.sha256, "status": v.status, "superseded": v.status == "superseded"},
         "anchor": {"id": a.id, "kind": a.kind, "page_index": a.page_index, "page_label": a.page_label,
                    "bbox": a.bbox, "text_start": a.text_start, "text_end": a.text_end, "sheet": a.sheet,
-                   "row_number": a.row_number, "column": a.column, "cell_ref": a.cell_ref, "raw_text": a.raw_text},
+                   "row_number": a.row_number, "column": a.column, "cell_ref": a.cell_ref, "raw_text": a.raw_text,
+                   "bbox_convention": a.bbox_convention, "confidence": a.confidence},
+        "page": page,
         "context": context,
         "context_highlight": highlight,
         # Token-authenticated so it can open in a frame or new tab; membership is re-checked on use.
         "view_url": (f"/sources/{v.id}/content?u={access.principal.user_id}"
                      f"&token={ctx.signer.sign(v.id, access.principal.user_id)}"),
     }
+
+
+PAGE_IMAGE_DPI = 110
+
+
+def page_image(db: Session, ctx: Context, access: ProjectAccess, version_id: str, page_index: int, token: str) -> bytes:
+    """Render one page of an immutable PDF version as PNG for evidence highlighting (FR13)."""
+    from . import ocr
+
+    v = db.get(DocumentVersion, version_id)
+    if v is None or v.project_id != access.project.id or v.status == "deleted" or v.detected_format != "pdf":
+        raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
+    if not ctx.signer.verify(v.id, access.principal.user_id, token):
+        raise ApiError("AUTH_FORBIDDEN", "View link expired or invalid; request a new one")
+    data = ctx.store.get(v.storage_key)
+    try:
+        return ocr.render_page_png(data, page_index, dpi=PAGE_IMAGE_DPI)
+    except IndexError:
+        raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied") from None
 
 
 def source_bytes(db: Session, ctx: Context, access: ProjectAccess, version_id: str, token: str) -> tuple[bytes, str, str]:

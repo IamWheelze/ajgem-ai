@@ -14,6 +14,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     LargeBinary,
@@ -179,7 +180,9 @@ class PageText(Base):
     page_index: Mapped[int] = mapped_column(Integer)
     page_label: Mapped[str | None] = mapped_column(String(32), nullable=True)
     text: Mapped[str] = mapped_column(Text)
-    method: Mapped[str] = mapped_column(String(64))  # e.g. "pypdf-5.1.0:text-layer"
+    method: Mapped[str] = mapped_column(String(64))  # e.g. "pypdf-5.1.0:text-layer" or "tesseract 5.3.4:ocr@300dpi"
+    # Page size in points plus, for OCR pages, engine, confidence, rotation and quality flags.
+    quality: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class SourceAnchor(Base):
@@ -200,6 +203,8 @@ class SourceAnchor(Base):
     column: Mapped[str | None] = mapped_column(String(200), nullable=True)
     cell_ref: Mapped[str | None] = mapped_column(String(32), nullable=True)
     raw_text: Mapped[str] = mapped_column(Text, default="")
+    # OCR word confidence (0-100) for the anchored words; null for native text and table cells.
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class Job(Base):

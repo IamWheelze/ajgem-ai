@@ -124,7 +124,15 @@ export interface AnchorView {
     column: string | null;
     cell_ref: string | null;
     raw_text: string;
+    bbox_convention?: string | null;
+    confidence?: number | null;
   };
+  page?: {
+    method: string;
+    size: [number, number] | null;
+    image_url: string;
+    quality: { method?: string; engine?: string; mean_confidence?: number | null; low_confidence_words?: number; rotation_applied?: number; flags?: string[] };
+  } | null;
   context?: string | null;
   context_highlight?: [number, number] | null;
   view_url?: string;

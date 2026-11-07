@@ -1,5 +1,5 @@
 /** FR13 source viewer: opens the exact immutable version and locator behind a field or citation. */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { API_BASE, api, type AnchorView } from "../lib/api";
 import { useResource } from "../lib/hooks";
 import { shortId } from "../lib/format";
@@ -48,9 +48,17 @@ export function AnchorCard({ anchorId, field, showOriginal = false }: { anchorId
       </div>
       {a.kind === "pdf_text" ? (
         <>
-          <div className="faint">
-            Page {a.page_label ?? (a.page_index ?? 0) + 1} · characters {a.text_start}–{a.text_end}
-            {!a.bbox && " · word boxes not available for this extraction"}
+          <div className="row" style={{ gap: 6 }}>
+            <span className="faint">Page {a.page_label ?? (a.page_index ?? 0) + 1} · characters {a.text_start}–{a.text_end}</span>
+            {v.page?.quality.method === "ocr" && <span className="badge info" title={v.page.quality.engine}>OCR</span>}
+            {typeof a.confidence === "number" && (
+              <span className={`badge ${a.confidence < 60 ? "bad" : a.confidence < 80 ? "warn" : "ok"}`} title="Lowest OCR word confidence in this region">
+                {Math.round(a.confidence)}% confidence
+              </span>
+            )}
+            {!!v.page?.quality.rotation_applied && <span className="badge">rotated {v.page.quality.rotation_applied}°</span>}
+            {v.page?.quality.flags?.includes("LOW_PAGE_CONFIDENCE") && <span className="badge warn">poor scan</span>}
+            {!a.bbox && v.page?.quality.method !== "ocr" && <span className="faint">· text layer, no word boxes</span>}
           </div>
           <div className="evidence-text">{v.context ? <Highlighted text={v.context} range={v.context_highlight} /> : a.raw_text}</div>
         </>
@@ -65,14 +73,16 @@ export function AnchorCard({ anchorId, field, showOriginal = false }: { anchorId
       )}
       <div className="row">
         <a className="btn small" href={src} target="_blank" rel="noreferrer">Open original ↗</a>
-        {a.kind === "pdf_text" && (
+        {a.kind === "pdf_text" && v.page && (
           <button className="small" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-            {open ? "Hide page" : "Show page"}
+            {open ? "Hide page" : a.bbox ? "Show region on page" : "Show page"}
           </button>
         )}
         <span className="faint">anchor {shortId(a.id)}</span>
       </div>
-      {open && a.kind === "pdf_text" && <iframe className="source-frame" title={`${v.version!.filename} page ${(a.page_index ?? 0) + 1}`} src={src} />}
+      {open && a.kind === "pdf_text" && v.page && (
+        <PageImage url={`${API_BASE}${v.page.image_url}`} size={v.page.size} bbox={a.bbox} alt={`${v.version!.filename} page ${(a.page_index ?? 0) + 1}`} />
+      )}
     </div>
   );
 }
@@ -88,6 +98,29 @@ export function evidenceItems(fieldAnchors: Record<string, string[]> | undefined
   for (const [f, ids] of Object.entries(fieldAnchors ?? {})) for (const id of ids) by.set(id, [...(by.get(id) ?? []), f]);
   for (const id of anchorIds) if (!by.has(id)) by.set(id, []);
   return [...by].map(([anchorId, fs]) => ({ anchorId, field: fs.length ? fs.join(", ") : undefined }));
+}
+
+/** Rendered page image with the anchored region outlined (bbox in PDF points, origin top-left). */
+export function PageImage({ url, size, bbox, alt }: { url: string; size: [number, number] | null; bbox: number[] | null; alt: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const mark = useRef<HTMLDivElement>(null);
+  const [failed, setFailed] = useState(false);
+  const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+  const onLoad = () => {
+    if (box.current && mark.current) box.current.scrollTop = mark.current.offsetTop - box.current.clientHeight / 2;
+  };
+  if (failed) return <div className="notice warn"><div>Page image unavailable; use “Open original”.</div></div>;
+  return (
+    <div className="page-image" ref={box}>
+      <div style={{ position: "relative" }}>
+        <img src={url} alt={alt} onLoad={onLoad} onError={() => setFailed(true)} />
+        {bbox && size && (
+          <div ref={mark} className="page-mark" aria-label="Anchored region"
+            style={{ left: pct(bbox[0] - 3, size[0]), top: pct(bbox[1] - 3, size[1]), width: pct(bbox[2] - bbox[0] + 6, size[0]), height: pct(bbox[3] - bbox[1] + 6, size[1]) }} />
+        )}
+      </div>
+    </div>
+  );
 }
 
 export function SourceDrawer({ items, onClose, title = "Source evidence" }: { items: EvidenceItem[]; onClose: () => void; title?: string }) {

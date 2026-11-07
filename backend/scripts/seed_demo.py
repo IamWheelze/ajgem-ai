@@ -5,7 +5,8 @@
 Creates one organisation with admin / analyst / two reviewers / viewer, a second
 organisation (to check isolation), and a project containing: a 10-page synthetic
 report (PDF candidates awaiting review), a 100-row assay table (approved), one
-unknown-CRS field sample, and a revised certificate creating an open conflict.
+unknown-CRS field sample, a revised certificate creating an open conflict, and a scanned
+certificate (image-only PDF) that is OCRed when Tesseract is installed.
 Requires the dev dependencies (reportlab).
 """
 
@@ -74,6 +75,28 @@ def report_pdf() -> bytes:
     return buf.getvalue()
 
 
+def scanned_certificate_pdf() -> bytes:
+    """A SYNTHETIC scanned certificate: rendered and rasterised, with no text layer."""
+    import pypdfium2 as pdfium
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    c.setFont("Courier", 12)
+    y = 780
+    for line in ["SYNTHETIC LABORATORY CERTIFICATE (scanned copy)", "Certificate No: CERT-003", "Laboratory: Synthetic Lab",
+                 "Method: ICP-MS", "Basis: dry", "", "KW-105 Li 1420 ppm", "KW-106 Li <50 ppm", "KW-107 Li 980 ppm"]:
+        c.drawString(60, y, line)
+        y -= 20
+    c.showPage()
+    c.save()
+    img = pdfium.PdfDocument(buf.getvalue())[0].render(scale=200 / 72).to_pil().convert("L")
+    out = io.BytesIO()
+    img.save(out, format="PDF", resolution=200)
+    return out.getvalue()
+
+
 class As:
     def __init__(self, c: TestClient, uid: str):
         self.c, self.h = c, {"X-User-Id": uid}
@@ -125,6 +148,7 @@ def main() -> None:
         c.put(f"/projects/{pid}/config", json={"boundary": BOUNDARY, "working_crs": "EPSG:32632"}, headers=admin.h)
 
         an.upload(pid, report_pdf(), "kano_report_synthetic.pdf", "application/pdf")
+        an.upload(pid, scanned_certificate_pdf(), "cert003_scanned_synthetic.pdf", "application/pdf")
         t = an.upload(pid, assay_csv(100), "assays_cert001.csv", "text/csv")
         an.imp(t["version_id"], MAPPING)
         recs = an.get(f"/projects/{pid}/records", params={"limit": 500})["records"]
