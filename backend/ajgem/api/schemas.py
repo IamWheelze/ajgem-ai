@@ -22,6 +22,7 @@ class ProjectConfig(Strict):
     working_crs: str | None = None
     analyte_policy: dict | None = None
     retention_policy: dict | None = None
+    provider_policy: dict | None = None
 
 
 class MemberGrant(Strict):

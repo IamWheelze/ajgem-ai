@@ -18,6 +18,7 @@ export default function Admin() {
       <div className="page-head"><div><h1>Administration</h1><p>Permissions are per-project grants. Administration does not confer geological review authority.</p></div></div>
       {roles.has("admin") && <Members />}
       {roles.has("admin") && <Config />}
+      {roles.has("admin") && <LanguageModelPolicy />}
       <Factors />
       {roles.has("admin") && <Audit />}
     </div>
@@ -108,6 +109,48 @@ function Config() {
         </label>
         <ErrorNotice error={save.error} />
         <div><button className="primary" disabled={(crs === null && boundary === null) || save.pending} onClick={save.run}>Save as new revision</button></div>
+      </div>
+    </section>
+  );
+}
+
+function LanguageModelPolicy() {
+  const { pid } = useProject();
+  const p = useResource(() => api.get<ProjectDetail>(`/projects/${pid}`), [pid]);
+  const policy = p.data?.config?.provider_policy ?? {};
+  const [allow, setAllow] = useState<boolean | null>(null);
+  const [notes, setNotes] = useState<string | null>(null);
+  const llm = p.data?.llm;
+  const on = allow ?? Boolean(policy.allow_external_llm);
+  const text = notes ?? policy.notes ?? "";
+  const save = useAction(async () => {
+    await api.put(`/projects/${pid}/config`, { provider_policy: { allow_external_llm: on, provider: llm?.provider ?? null, notes: text } });
+    setAllow(null); setNotes(null); p.reload();
+  });
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2>Generated answers (language model)</h2>
+        {policy.allow_external_llm ? <span className="badge ok">allowed</span> : <span className="badge">off</span>}
+      </div>
+      <div className="card-pad stack">
+        <p className="muted" style={{ margin: 0 }}>
+          Narrative questions can be answered by an external language model that sees only the authorised document excerpts
+          retrieval selects. Every statement must cite those excerpts; uncited text and figures not found in the cited text are withheld.
+          Numerical questions always use the deterministic tools.
+        </p>
+        <div className="faint">
+          Server provider: {llm?.configured ? <strong>{llm.provider} · {llm.model}</strong> : <>none configured (set <code>AJGEM_LLM_PROVIDER=anthropic</code> and credentials on the server)</>}
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={on} onChange={(e) => setAllow(e.target.checked)} />
+          Allow this project's evidence excerpts to be sent to the configured provider
+        </label>
+        <label className="field">Processing basis (required to allow): provider retention, region, subprocessors and contract reference
+          <textarea rows={3} value={text} onChange={(e) => setNotes(e.target.value)} placeholder="e.g. Anthropic commercial terms, no training on inputs; 30-day retention; US processing; approved by founder 2026-11-07" />
+        </label>
+        <ErrorNotice error={save.error} />
+        <div><button className="primary" disabled={(allow === null && notes === null) || (on && !text.trim()) || save.pending} onClick={save.run}>Save as new configuration revision</button></div>
       </div>
     </section>
   );

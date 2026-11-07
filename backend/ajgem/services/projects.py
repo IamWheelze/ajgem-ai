@@ -51,8 +51,17 @@ def update_config(
     working_crs: str | None = None,
     analyte_policy: dict | None = None,
     retention_policy: dict | None = None,
+    provider_policy: dict | None = None,
 ) -> ProjectConfigRevision:
     access.require("project.manage")
+    if provider_policy is not None:
+        allowed = {"allow_external_llm", "provider", "notes"}
+        bad = set(provider_policy) - allowed
+        if bad or not isinstance(provider_policy.get("allow_external_llm", False), bool):
+            raise ApiError("INPUT_INVALID", f"provider_policy accepts {sorted(allowed)}; allow_external_llm must be boolean")
+        if provider_policy.get("allow_external_llm") and not str(provider_policy.get("notes") or "").strip():
+            raise ApiError("INPUT_INVALID", "Record the provider's retention, region and contractual basis in notes "
+                                            "before allowing external processing (NF04)")
     if boundary is not None:
         try:
             validate_boundary(boundary)
@@ -74,6 +83,7 @@ def update_config(
         working_crs=working_crs if working_crs is not None else (prev.working_crs if prev else None),
         analyte_policy=analyte_policy if analyte_policy is not None else (prev.analyte_policy if prev else {}),
         retention_policy=retention_policy if retention_policy is not None else (prev.retention_policy if prev else {}),
+        provider_policy=provider_policy if provider_policy is not None else (prev.provider_policy if prev else {}),
         created_by=access.principal.user_id,
     )
     db.add(rev)
@@ -81,6 +91,7 @@ def update_config(
     audit.record(
         db, access.principal, "project.config", "project", project.id, project_id=project.id,
         before=str(project.config_revision - 1), after=str(project.config_revision),
+        detail={"provider_policy": provider_policy} if provider_policy is not None else None,
     )
     return rev
 

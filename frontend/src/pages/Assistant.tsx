@@ -1,7 +1,7 @@
 /** FR16/FR17 assistant: scoped questions, deterministic results, separated facts/calculations, citations. */
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, api, type Answer, type StructuredAnswer, type ToolResult } from "../lib/api";
+import { ApiError, api, type Answer, type NarrativeAnswer, type StructuredAnswer, type ToolResult } from "../lib/api";
 import { qualified, reasonText, when } from "../lib/format";
 import { useAction, useResource } from "../lib/hooks";
 import { useScope } from "../lib/session";
@@ -17,7 +17,7 @@ const EXAMPLES = [
   "Where was spodumene reported?",
 ];
 
-interface Snapshot { id: string; state: string; stale_reason: string | null; question: string; params: Record<string, unknown>; result: ToolResult; created_at: string }
+interface Snapshot { id: string; state: string; stale_reason: string | null; question: string; params: Record<string, unknown>; result: ToolResult | NarrativeAnswer; created_at: string }
 
 export default function Assistant() {
   const { pid, summary } = useProject();
@@ -97,13 +97,16 @@ export default function Assistant() {
 
       {err && <AnswerError error={err} onBasis={(b) => { setBasis(b); }} />}
       {answer?.kind === "structured" && <StructuredView a={answer} onCite={cite} />}
+      {answer?.kind === "narrative" && <NarrativeView a={answer} onCite={cite} />}
       {answer?.kind === "retrieval_only" && (
         <div className="card card-pad stack">
-          <div className="notice info"><div><strong>No generated answer</strong>{answer.message}</div></div>
+          <div className={`notice ${answer.status === "provider_not_permitted" ? "warn" : "info"}`}>
+            <div><strong>{answer.status === "provider_not_permitted" ? "Generated answers are off for this project" : "No generated answer"}</strong>{answer.message}</div>
+          </div>
           {answer.insufficient_evidence && <div className="notice warn"><div><strong>Insufficient evidence</strong>Nothing in the authorised, extracted text matches. This is not evidence that it is absent from the original documents.</div></div>}
           {answer.search.full_text.map((t, i) => (
             <div key={i} className="stack" style={{ gap: 2 }}>
-              <span className="faint">Source statement · page {t.page_label ?? t.page_index + 1} · version {t.version_id.slice(0, 8)}</span>
+              <span className="faint">Search hit · page {t.page_label ?? t.page_index + 1} · version {t.version_id.slice(0, 8)}</span>
               <div className="evidence-text">{t.snippet}</div>
             </div>
           ))}
@@ -115,14 +118,20 @@ export default function Assistant() {
             <div>
               <strong>Saved answer · {snapshot.question}</strong>
               Asked {when(snapshot.created_at)} · <StatusBadge status={snapshot.state} /> {snapshot.stale_reason && <span className="faint">— {snapshot.stale_reason}</span>}
-              <div className="row" style={{ marginTop: 6 }}>
-                <button className="small" onClick={async () => { const r = await rerun.run(snapshot.id); if (r) setReproduced(r.reproduced); }}>Re-run frozen snapshot</button>
-                <button className="small primary" onClick={() => { setSnapshot(null); setAnswer(null); api.post<Answer>(`/projects/${pid}/questions`, { tool: "assay_threshold", question: snapshot.question, params: snapshot.params }).then(setAnswer, () => undefined); }}>Fresh calculation on current data</button>
-              </div>
+              {!isNarrative(snapshot.result) ? (
+                <div className="row" style={{ marginTop: 6 }}>
+                  <button className="small" onClick={async () => { const r = await rerun.run(snapshot.id); if (r) setReproduced(r.reproduced); }}>Re-run frozen snapshot</button>
+                  <button className="small primary" onClick={() => { setSnapshot(null); setAnswer(null); api.post<Answer>(`/projects/${pid}/questions`, { tool: "assay_threshold", question: snapshot.question, params: snapshot.params }).then(setAnswer, () => undefined); }}>Fresh calculation on current data</button>
+                </div>
+              ) : (
+                <div className="row" style={{ marginTop: 6 }}>
+                  <button className="small primary" onClick={() => { setSnapshot(null); setQ(snapshot.question); ask.run(snapshot.question); }}>Ask again on current evidence</button>
+                </div>
+              )}
               {reproduced !== null && <div style={{ marginTop: 6 }}>{reproduced ? <span className="badge ok">Frozen inputs reproduce the stored result exactly</span> : <span className="badge bad">Re-run differs from the stored result</span>}</div>}
             </div>
           </div>
-          <ThresholdView r={snapshot.result} onCite={cite} />
+          {isNarrative(snapshot.result) ? <NarrativeView a={snapshot.result} onCite={cite} /> : <ThresholdView r={snapshot.result as ToolResult} onCite={cite} />}
         </div>
       )}
 
@@ -164,6 +173,88 @@ function AnswerError({ error, onBasis }: { error: unknown; onBasis: (b: string) 
   if (error instanceof ApiError && error.code === "CONVERSION_NOT_APPROVED")
     return <div className="notice warn"><div><strong>Conversion factor not approved</strong>{error.message}. A reviewer must activate the versioned factor (Administration → Conversion factors) before oxide equivalents can be calculated.</div></div>;
   return <ErrorNotice error={error} />;
+}
+
+const isNarrative = (r: ToolResult | NarrativeAnswer): r is NarrativeAnswer => (r as NarrativeAnswer).kind === "narrative";
+
+const SUPPRESSED_LABEL: Record<string, string> = {
+  uncited: "had no citation",
+  unsupported_figure: "contained a figure not found in the cited text",
+  unresolved_citation: "cited something that was not supplied",
+};
+
+function NarrativeView({ a, onCite }: { a: NarrativeAnswer; onCite: (t: string, ids: string[]) => void }) {
+  const suppressedTotal = Object.values(a.suppressed ?? {}).reduce((n, v) => n + (v ?? 0), 0);
+  // Number each distinct source once, in order of first use.
+  const order: string[] = [];
+  for (const s of a.statements) for (const c of s.citations) if (!order.includes(c.anchor_id)) order.push(c.anchor_id);
+  const sources = new Map(a.statements.flatMap((s) => s.citations).map((c) => [c.anchor_id, c]));
+  return (
+    <div className="stack">
+      <div className="row">
+        <StatusBadge status={a.state} label={`answer ${a.state}`} />
+        {a.status === "answered" && <span className="badge ok">{a.statements.length} cited statement{a.statements.length === 1 ? "" : "s"} · {order.length} source{order.length === 1 ? "" : "s"}</span>}
+        {a.provider && <span className="faint">{a.provider.model} via {a.provider.name}{a.provider.served_by_fallback ? " (fallback model)" : ""} · {a.provider.adapter}</span>}
+      </div>
+      {a.status === "insufficient_evidence" && <div className="notice warn"><div><strong>Insufficient evidence</strong>{a.message}</div></div>}
+      {a.status === "declined" && <div className="notice warn"><div><strong>Declined</strong>{a.message}</div></div>}
+      {a.statements.length > 0 && (
+        <div className="card">
+          <div className="card-head">
+            <div className="section-label"><span className="bar" style={{ background: "var(--info)" }} /><h2>Source statements</h2></div>
+            <span className="faint">What the documents say, each tied to its source</span>
+          </div>
+          <div className="card-pad stack narrative">
+            {a.statements.map((s, i) => (
+              <p key={i}>
+                {s.text}{" "}
+                {s.citations.map((c) => (
+                  <button key={c.anchor_id} className="cite" title={`${c.title}\n“${c.text}”`} onClick={() => onCite(c.title, [c.anchor_id])} aria-label={`Open source ${order.indexOf(c.anchor_id) + 1}: ${c.title}`}>
+                    {order.indexOf(c.anchor_id) + 1}
+                  </button>
+                ))}
+              </p>
+            ))}
+            {a.truncated && <div className="faint">The answer was cut off at the output limit.</div>}
+          </div>
+          <div className="card-pad stack" style={{ borderTop: "1px solid var(--border)" }}>
+            <h3>Sources</h3>
+            <ol className="sources">
+              {order.map((id) => {
+                const c = sources.get(id)!;
+                return (
+                  <li key={id}>
+                    <button className="link" onClick={() => onCite(c.title, [id])}>{c.title}</button>
+                    <div className="faint mono">“{c.text}”</div>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        </div>
+      )}
+      {suppressedTotal > 0 && (
+        <div className="notice info">
+          <div>
+            <strong>{suppressedTotal} passage{suppressedTotal === 1 ? "" : "s"} of generated text withheld</strong>
+            {Object.entries(a.suppressed).filter(([, n]) => n).map(([k, n]) => `${n} ${SUPPRESSED_LABEL[k] ?? k}`).join("; ")}. Only statements fully supported by their citations are shown.
+          </div>
+        </div>
+      )}
+      <div className="card card-pad">
+        <div className="section-label"><span className="bar" style={{ background: "var(--indet)" }} /><h3>Interpretations</h3></div>
+        <p className="faint">None generated. {a.notice}</p>
+      </div>
+      <details className="card card-pad">
+        <summary>How this answer was produced</summary>
+        <div className="stack" style={{ marginTop: 8 }}>
+          <div className="faint">Retrieval {a.retrieval.method} ({a.retrieval.synonyms}) over authorised document text, terms: {a.retrieval.terms.join(", ") || "none"}.</div>
+          <ul className="faint" style={{ margin: 0 }}>{a.retrieval.passages.map((p) => <li key={p.source}>{p.title} · {p.blocks} lines</li>)}</ul>
+          {a.provider && <div className="faint">Tokens: {Object.entries(a.provider.usage).map(([k, v]) => `${k.replaceAll("_", " ")} ${v}`).join(", ")}{a.provider.request_id ? ` · request ${a.provider.request_id}` : ""}</div>}
+        </div>
+      </details>
+    </div>
+  );
 }
 
 function StructuredView({ a, onCite }: { a: StructuredAnswer; onCite: (t: string, ids: string[]) => void }) {

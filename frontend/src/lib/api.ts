@@ -236,7 +236,26 @@ export interface RetrievalAnswer {
   search: SearchResult;
   insufficient_evidence: boolean;
 }
-export type Answer = StructuredAnswer | RetrievalAnswer;
+export interface NarrativeStatement {
+  text: string;
+  citations: { anchor_id: string; title: string; text: string; version_id: string; page_index: number }[];
+}
+export interface NarrativeAnswer {
+  kind: "narrative";
+  answer_id: string;
+  state: string;
+  status: "answered" | "insufficient_evidence" | "declined";
+  statements: NarrativeStatement[];
+  suppressed: Partial<Record<"uncited" | "unsupported_figure" | "unresolved_citation", number>>;
+  truncated?: boolean;
+  retrieval: { method: string; synonyms: string; terms: string[]; passages: { title: string; source: string; blocks: number }[] };
+  provider: null | { name: string; model: string; adapter: string; request_id: string | null; usage: Record<string, number>; served_by_fallback: boolean; stop_reason: string | null };
+  notice: string;
+  message: string | null;
+  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean };
+  search?: SearchResult;
+}
+export type Answer = StructuredAnswer | RetrievalAnswer | NarrativeAnswer;
 
 export interface ConflictView {
   id: string;
@@ -274,7 +293,11 @@ export interface ProjectDetail {
   id: string;
   name: string;
   roles: string[];
-  config: null | { revision: number; boundary: GeoJSON.Polygon | GeoJSON.MultiPolygon | null; working_crs: string | null; created_by: string; created_at: string };
+  llm?: { configured: boolean; provider: string | null; model: string | null };
+  config: null | {
+    revision: number; boundary: GeoJSON.Polygon | GeoJSON.MultiPolygon | null; working_crs: string | null; created_by: string; created_at: string;
+    provider_policy?: { allow_external_llm?: boolean; provider?: string | null; notes?: string };
+  };
 }
 
 /** Page through /records until exhausted (or `max`). */

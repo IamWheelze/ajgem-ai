@@ -249,6 +249,9 @@ def methods_and_units(db: Session, access: ProjectAccess) -> dict:
 
 def rerun_snapshot(db: Session, access: ProjectAccess, answer_id: str) -> dict:
     snap = get_snapshot(db, access, answer_id)
+    if snap.tool != THRESHOLD_TOOL[0]:
+        raise ApiError("INPUT_UNSUPPORTED", "Only deterministic calculations can be re-run; ask the question again "
+                                            "for a fresh narrative answer")
     again = assay_threshold(db, access, snap.params, frozen=snap.inputs, save=False)
     return {"answer_id": snap.id, "reproduced": _strip(again) == _strip(snap.result), "result": again}
 
@@ -297,7 +300,17 @@ def search(db: Session, access: ProjectAccess, q: str, limit: int = 20) -> dict:
                                                 PageText.text.ilike(f"%{_escape_like(q)}%", escape="\\")).limit(limit)):
         i = pt.text.lower().find(q.lower())
         text_hits.append({"version_id": pt.version_id, "page_index": pt.page_index, "page_label": pt.page_label,
-                          "snippet": pt.text[max(0, i - 80): i + len(q) + 80], "offset": i})
+                          "snippet": pt.text[max(0, i - 80): i + len(q) + 80], "offset": i, "match": "phrase"})
+    if not text_hits:
+        # No exact phrase: fall back to keyword retrieval (distinct-term ranking with element synonyms).
+        from .answers import retrieve
+
+        passages, _ = retrieve(db, access, q)
+        for p in passages[:limit]:
+            first = p.blocks[0].ref
+            text_hits.append({"version_id": first["version_id"], "page_index": first["page_index"],
+                              "page_label": first.get("page_label"), "snippet": "\n".join(b.text for b in p.blocks),
+                              "offset": first["text_start"], "match": "keywords"})
     return {"query": q, "exact": exact, "full_text": text_hits,
             "semantic": {"status": "unavailable", "message": "Semantic index not configured; exact and full-text results shown"}}
 
@@ -362,13 +375,10 @@ def ask(db: Session, access: ProjectAccess, question: str | None, tool: str | No
         return _wrap(missing_coordinates(db, access), db)
     if re.search(r"method|unit", question, re.I):
         return _wrap(methods_and_units(db, access), db)
+    from . import answers
+
     hits = search(db, access, question)
-    if provider is None:
-        return {"kind": "retrieval_only", "status": "provider_unavailable",
-                "message": "No language-model provider is configured; showing search results. No generated text.",
-                "search": hits, "source_statements": [], "calculations": [], "interpretations": [],
-                "insufficient_evidence": not (hits["exact"] or hits["full_text"])}
-    return provider.answer(question, hits)  # pragma: no cover - adapter seam
+    return answers.narrative(db, access, question, provider, hits)
 
 
 def _run_tool(db, access, tool, params, question):
