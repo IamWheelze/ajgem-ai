@@ -12,8 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..context import Context, Settings
-from .. import rls
-from ..db import Base, bind_rls_context, make_engine, make_session_factory
+from .. import migrate, rls
+from ..db import bind_rls_context, make_engine, make_session_factory
 from ..errors import ApiError, forbidden
 from ..models import (
     AnswerSnapshot,
@@ -47,10 +47,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         Path(settings.database_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
     engine = make_engine(settings.database_url)
     admin_engine = make_engine(settings.database_admin_url) if settings.database_admin_url else engine
-    # Schema setup runs as the owner role; production should move this to versioned migrations (NF14).
-    Base.metadata.create_all(admin_engine)
+    # Versioned migrations (Alembic) run as the owner role: automatically, or verified when auto-migrate is off.
+    if settings.auto_migrate:
+        migrate.upgrade(admin_engine, engine.url.username)
+    else:
+        migrate.ensure_at_head(admin_engine)
     if engine.dialect.name == "postgresql":
-        rls.install(admin_engine, engine.url.username)
+        missing = rls.verify(admin_engine)
+        if missing:
+            raise migrate.SchemaError(f"Row-level security is not enabled on: {', '.join(missing)}")
         rls.ensure_runtime_role_is_constrained(engine, allow_bypass=settings.allow_rls_bypass)
     SessionLocal = make_session_factory(engine)
     bind_rls_context(SessionLocal)

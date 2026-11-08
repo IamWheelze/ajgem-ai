@@ -9,7 +9,7 @@ calculations are mandatory.
 This repository holds the **Phase 1 vertical slice** (FRD §13): a FastAPI backend and a React +
 MapLibre web client covering the FRD §8 screen inventory. See
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for the status of each requirement and what is
-deliberately not built yet. The main gaps are managed identity, migrations, and retention and deletion.
+deliberately not built yet. The main gaps are managed identity, and retention and deletion.
 
 ## What the slice does
 
@@ -117,6 +117,15 @@ Open http://localhost:5173 and pick a demo user. Vite proxies `/api` to the back
 ```bash
 cd frontend && npm test && npm run typecheck
 ```
+
+### Database migrations
+
+The schema is managed by Alembic (`backend/migrations/`). On start-up the app upgrades the database to the latest revision automatically, running as the owner role. Revision `0002` installs the row-level security policies.
+
+- **Turning automatic migration off:** set `AJGEM_AUTO_MIGRATE=0`. Start-up then only checks that the schema is current and refuses to start otherwise. Run `python -m ajgem migrate` as a deployment step instead, and use `python -m ajgem db-status` to see where a database is.
+- **Changing the schema:** edit the models, then from `backend/` run `alembic revision --autogenerate -m "describe the change"` and review the generated file. A test compares the migrated database with the models, so a model change without a migration fails CI.
+- **Adding a table:** also add it to `ajgem/rls.py` `POLICIES`, and have the migration re-run `rls.statements(role)`, as `0002` does. A test fails if any table lacks forced RLS.
+- **Old databases:** a development database created before migrations existed is refused with instructions. Delete `backend/var` and restart.
 
 ### PostgreSQL with row-level security
 
