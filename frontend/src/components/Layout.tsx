@@ -114,8 +114,20 @@ function Shell({ pid, summary, children }: { pid?: string; summary?: Resource<Su
             <div className="faint">{me?.organisation.name}</div>
             {s && <div className="faint">Roles: {s.roles.join(", ")}</div>}
           </div>
-          <button className="small" onClick={() => { signOut(); nav("/login"); }}>Switch user</button>
-          <div className="faint">Development sign-in. Not for real data.</div>
+          {me?.auth_mode === "oidc" ? (
+            <>
+              <div className="row" style={{ gap: 4 }}>
+                <span className="faint">Organisation sign-in</span>
+                {me.mfa ? <span className="badge ok">MFA</span> : <span className="badge warn" title="Approvals and administration need MFA">no MFA</span>}
+              </div>
+              <button className="small" onClick={() => { signOut(); nav("/login"); }}>Sign out</button>
+            </>
+          ) : (
+            <>
+              <button className="small" onClick={() => { signOut(); nav("/login"); }}>Switch user</button>
+              <div className="faint">Development sign-in. Not for real data.</div>
+            </>
+          )}
         </div>
       </aside>
       <main className="main">{children}</main>

@@ -1,6 +1,6 @@
 /** Jobs and exports: processing state, retry/cancel, export with provenance manifest (FR05, FR20). */
 import { useState } from "react";
-import { API_BASE, api, getUserId, type JobView } from "../lib/api";
+import { API_BASE, api, authHeaders, type JobView } from "../lib/api";
 import { when } from "../lib/format";
 import { useAction, useResource } from "../lib/hooks";
 import { useProject } from "../components/Layout";
@@ -57,7 +57,7 @@ function Exports() {
   });
   const download = useAction(async (id: string) => {
     // Authorisation is re-checked by the server at download time.
-    const res = await fetch(`${API_BASE}/exports/${id}/download`, { headers: { "X-User-Id": getUserId() ?? "" } });
+    const res = await fetch(`${API_BASE}/exports/${id}/download`, { headers: authHeaders() });
     if (!res.ok) throw new Error((await res.json().catch(() => null))?.error?.message ?? res.statusText);
     const url = URL.createObjectURL(await res.blob());
     const a = document.createElement("a");

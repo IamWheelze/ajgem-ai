@@ -34,10 +34,17 @@ PERMISSIONS: dict[str, set[str]] = {
 }
 
 
+# Operations that administrators and reviewers perform: they need a multi-factor sign-in (NF02).
+MFA_OPERATIONS = {"project.manage", "records.review", "conflicts.resolve", "audit.read"}
+
+
 @dataclass(frozen=True)
 class Principal:
     user_id: str
     organisation_id: str
+    # Whether this sign-in used multi-factor authentication. The development stub has no factors
+    # to check and reports True; OIDC sets it from the token.
+    mfa: bool = True
 
 
 @dataclass(frozen=True)
@@ -56,9 +63,12 @@ class ProjectAccess:
     def require(self, op: str) -> None:
         if not self.can(op):
             raise ApiError("AUTH_FORBIDDEN", f"Your project role does not permit '{op}'")
+        if op in MFA_OPERATIONS and not self.principal.mfa:
+            raise ApiError("MFA_REQUIRED", "This action needs a multi-factor sign-in. Sign out and sign in again "
+                                           "with your second factor.")
 
 
-def load_principal(db: Session, user_id: str | None) -> Principal:
+def load_principal(db: Session, user_id: str | None, mfa: bool = True) -> Principal:
     if not user_id:
         raise ApiError("AUTH_REQUIRED", "Authentication required")
     # RLS context (PostgreSQL): the user id first, so the user's own row is readable, then the organisation.
@@ -67,7 +77,7 @@ def load_principal(db: Session, user_id: str | None) -> Principal:
     if user is None or not user.active:
         raise ApiError("AUTH_REQUIRED", "Authentication required")
     set_rls_context(db, org_id=user.organisation_id)
-    return Principal(user.id, user.organisation_id)
+    return Principal(user.id, user.organisation_id, mfa)
 
 
 def _aware(dt: datetime | None) -> datetime | None:

@@ -9,7 +9,7 @@ calculations are mandatory.
 This repository holds the **Phase 1 vertical slice** (FRD §13): a FastAPI backend and a React +
 MapLibre web client covering the FRD §8 screen inventory. See
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for the status of each requirement and what is
-deliberately not built yet. The main gap is managed identity (the sign-in is still a development stub).
+deliberately not built yet. All P0 requirements now have an implementation. What's left is pilot work: measured accuracy, cost, and per-customer configuration (see the traceability doc).
 
 ## What the slice does
 
@@ -117,6 +117,20 @@ Open http://localhost:5173 and pick a demo user. Vite proxies `/api` to the back
 ```bash
 cd frontend && npm test && npm run typecheck
 ```
+
+### Sign-in (OIDC)
+
+By default the app runs in development sign-in mode: a user picker and an `X-User-Id` header. Never use it with real data. For real use, register a **public** web client with redirect URI `https://<your-host>/auth/callback` with your identity provider (Microsoft Entra ID, Google Workspace, Auth0, Okta, Keycloak…), then set:
+
+```bash
+export AJGEM_AUTH_MODE=oidc AJGEM_OIDC_ISSUER=https://login.example.com/your-tenant AJGEM_OIDC_CLIENT_ID=your-client-id
+```
+
+- **Accounts:** users must already exist (`python -m ajgem create-user ORG EMAIL`, then add them to projects). Their first sign-in with that verified email links the account.
+- **MFA:** administrators and reviewers need MFA for approvals and administration. MFA is detected from the token's `amr` claim (`AJGEM_OIDC_MFA_AMR`, default `mfa,otp,hwk,fido,sc`) or an `acr` value (`AJGEM_OIDC_MFA_ACR`). Check what your provider emits.
+- **Revocation:** `python -m ajgem revoke-sessions EMAIL` refuses that user's existing sessions.
+- **Session length:** sessions last at most `AJGEM_OIDC_MAX_SESSION_HOURS` (default 12).
+- **Local testing:** `python scripts/mock_oidc.py` runs a development-only identity provider on port 9000 (anyone can sign in as anyone). Start the API with `AJGEM_OIDC_ISSUER=http://127.0.0.1:9000 AJGEM_OIDC_CLIENT_ID=ajgem-web`.
 
 ### Database migrations
 

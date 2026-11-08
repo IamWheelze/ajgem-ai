@@ -7,6 +7,7 @@ import { Loading } from "./components/ui";
 import { SessionProvider, ScopeProvider, useSession } from "./lib/session";
 import Admin from "./pages/Admin";
 import Assistant from "./pages/Assistant";
+import AuthCallback from "./pages/AuthCallback";
 import Conflicts from "./pages/Conflicts";
 import Dashboard from "./pages/Dashboard";
 import Explorer from "./pages/Explorer";
@@ -30,6 +31,7 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/projects" element={<RequireUser><PlainShell><Projects /></PlainShell></RequireUser>} />
       <Route path="/p/:pid" element={<RequireUser><ScopeProvider><ProjectLayout /></ScopeProvider></RequireUser>}>
         <Route index element={<Dashboard />} />

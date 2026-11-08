@@ -42,6 +42,15 @@ class Settings:
     llm_max_output_tokens: int = 4000
     # Server-side refusal fallback mode ("default", or "" to disable).
     llm_fallbacks: str = field(default_factory=lambda: os.environ.get("AJGEM_LLM_FALLBACKS", "default"))
+    # Authentication: "dev" (X-User-Id header + user picker; never with real data) or "oidc" (NF02).
+    auth_mode: str = field(default_factory=lambda: os.environ.get("AJGEM_AUTH_MODE", "dev"))
+    oidc_issuer: str | None = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_ISSUER") or None)
+    oidc_client_id: str | None = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_CLIENT_ID") or None)
+    oidc_audience: str | None = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_AUDIENCE") or None)
+    oidc_jwks_url: str | None = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_JWKS_URL") or None)
+    oidc_mfa_amr: str = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_MFA_AMR", "mfa,otp,hwk,fido,sc"))
+    oidc_mfa_acr: str = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_MFA_ACR", ""))
+    oidc_max_session_hours: float = field(default_factory=lambda: float(os.environ.get("AJGEM_OIDC_MAX_SESSION_HOURS", "12")))
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 
