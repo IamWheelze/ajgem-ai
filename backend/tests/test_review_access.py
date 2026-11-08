@@ -122,7 +122,7 @@ def test_audit_reconstructs_history_and_is_immutable(app, team, assay):
     evs = [e for e in admin.get(f"/projects/{pid}/audit").json()["events"] if e["entity_id"] == assay["id"]]
     assert [(e["action"], e["before"], e["after"]) for e in evs] == [("record.edit", "1", "2"), ("record.approve", None, "2")]
     assert team["analyst"].get(f"/projects/{pid}/audit").status_code == 403
-    with app.state.sessions() as s:
+    with app.state.admin_sessions() as s:
         ev = s.query(AuditEvent).first()
         ev.action = "tampered"
         with pytest.raises(AuditImmutable):

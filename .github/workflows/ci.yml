@@ -14,8 +14,23 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend tests (pytest)
+    name: Backend tests (pytest, ${{ matrix.db }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci_superuser_pw
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      AJGEM_TEST_PG: ${{ matrix.db == 'postgres' && '1' || '' }}
     defaults:
       run:
         working-directory: backend
@@ -29,6 +44,16 @@ jobs:
       - name: Install Tesseract OCR
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-eng
       - run: pip install -r requirements-dev.txt
+      - name: Create owner and RLS-constrained runtime roles
+        if: matrix.db == 'postgres'
+        env:
+          PGPASSWORD: ci_superuser_pw
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE ajgem_owner LOGIN PASSWORD 'owner_dev_pw' BYPASSRLS;
+          CREATE ROLE ajgem_app LOGIN PASSWORD 'app_dev_pw' NOBYPASSRLS;
+          CREATE DATABASE ajgem_test OWNER ajgem_owner;
+          SQL
       - run: python -m pytest -rs
 
   frontend:

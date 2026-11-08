@@ -12,7 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..context import Context, Settings
-from ..db import Base, make_engine, make_session_factory
+from .. import rls
+from ..db import Base, bind_rls_context, make_engine, make_session_factory
 from ..errors import ApiError, forbidden
 from ..models import (
     AnswerSnapshot,
@@ -45,11 +46,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         Path(settings.database_url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
     engine = make_engine(settings.database_url)
-    Base.metadata.create_all(engine)  # development convenience; production uses versioned migrations (NF14)
+    admin_engine = make_engine(settings.database_admin_url) if settings.database_admin_url else engine
+    # Schema setup runs as the owner role; production should move this to versioned migrations (NF14).
+    Base.metadata.create_all(admin_engine)
+    if engine.dialect.name == "postgresql":
+        rls.install(admin_engine, engine.url.username)
+        rls.ensure_runtime_role_is_constrained(engine, allow_bypass=settings.allow_rls_bypass)
     SessionLocal = make_session_factory(engine)
+    bind_rls_context(SessionLocal)
+    AdminSessions = make_session_factory(admin_engine)
     ctx = Context.from_settings(settings)
     app = FastAPI(title="AJGEM Exploration Evidence API", version="0.1.0")
     app.state.ctx, app.state.engine, app.state.sessions = ctx, engine, SessionLocal
+    # Owner-role sessions bypass RLS: maintenance tools only (seeding, the dev user picker), never request data.
+    app.state.admin_engine, app.state.admin_sessions = admin_engine, AdminSessions
 
     @app.middleware("http")
     async def correlation(request: Request, call_next):
@@ -401,11 +411,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": u.id, "email": u.email, "name": u.name, "organisation": {"id": org.id, "name": org.name}}
 
     @app.get("/dev/users")
-    def dev_users(s: Session = Depends(db)):
+    def dev_users():
         if not settings.dev_login:
             raise forbidden()
-        rows = s.execute(select(User, Organisation).join(Organisation, Organisation.id == User.organisation_id)
-                         .order_by(Organisation.name, User.email)).all()
+        # Cross-organisation listing for the development sign-in picker: needs the owner role under RLS.
+        with AdminSessions() as s:
+            rows = s.execute(select(User, Organisation).join(Organisation, Organisation.id == User.organisation_id)
+                             .order_by(Organisation.name, User.email)).all()
         return {"users": [{"id": u.id, "email": u.email, "name": u.name, "organisation": o.name} for u, o in rows]}
 
     @app.get("/org/users")

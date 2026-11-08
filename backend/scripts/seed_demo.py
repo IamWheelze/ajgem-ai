@@ -124,7 +124,7 @@ class As:
 
 def main() -> None:
     app = create_app(Settings())
-    with app.state.sessions() as s:
+    with app.state.admin_sessions() as s:  # owner role: creates organisations and users
         if s.query(User).filter(User.email == "admin@kano.example").first():
             print("Demo data already present.")
             return

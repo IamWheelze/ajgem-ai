@@ -71,3 +71,35 @@ def make_engine(url: str) -> Engine:
 
 def make_session_factory(engine: Engine) -> sessionmaker:
     return sessionmaker(bind=engine, expire_on_commit=False, autoflush=True)
+
+
+# ---------------------------------------------------------------- RLS request context
+RLS_KEYS = {"user_id": "app.user_id", "org_id": "app.org_id"}
+
+
+def _apply_rls(connection, values: dict) -> None:
+    if connection.dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    for key, setting in RLS_KEYS.items():
+        # Transaction-local (is_local = true): the setting ends with the transaction.
+        connection.execute(text("SELECT set_config(:k, :v, true)"), {"k": setting, "v": values.get(key) or ""})
+
+
+def set_rls_context(session, **values) -> None:
+    """Record the request identity for RLS and apply it to the current transaction, if any."""
+    ctx = session.info.setdefault("rls", {})
+    ctx.update({k: v for k, v in values.items() if k in RLS_KEYS})
+    if session.in_transaction():
+        _apply_rls(session.connection(), ctx)
+
+
+def bind_rls_context(session_factory: sessionmaker) -> None:
+    """Re-apply the stored context at the start of every transaction (commits end transaction-local settings)."""
+
+    @event.listens_for(session_factory, "after_begin")
+    def _after_begin(session, transaction, connection):  # pragma: no cover - exercised on PostgreSQL
+        ctx = session.info.get("rls")
+        if ctx:
+            _apply_rls(connection, ctx)

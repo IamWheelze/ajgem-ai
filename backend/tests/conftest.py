@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import sys
 from pathlib import Path
 
@@ -57,11 +58,35 @@ class Api:
         return r
 
 
+PG = os.environ.get("AJGEM_TEST_PG") == "1"
+PG_URL = os.environ.get("AJGEM_TEST_DATABASE_URL", "postgresql+psycopg://ajgem_app:app_dev_pw@127.0.0.1/ajgem_test")
+PG_ADMIN_URL = os.environ.get("AJGEM_TEST_DATABASE_ADMIN_URL",
+                              "postgresql+psycopg://ajgem_owner:owner_dev_pw@127.0.0.1/ajgem_test")
+
+
+def _reset_pg_schema():
+    from sqlalchemy import create_engine, text
+
+    eng = create_engine(PG_ADMIN_URL)
+    with eng.begin() as c:
+        c.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+        c.execute(text("CREATE SCHEMA public"))
+    eng.dispose()
+
+
 @pytest.fixture()
 def app(tmp_path):
-    settings = Settings(database_url="sqlite://", data_dir=tmp_path / "objects", url_secret=b"test-secret",
-                        retry_backoff_seconds=0)
-    return create_app(settings)
+    """SQLite by default; with AJGEM_TEST_PG=1 every test runs on PostgreSQL through the RLS-constrained role."""
+    common = dict(data_dir=tmp_path / "objects", url_secret=b"test-secret", retry_backoff_seconds=0)
+    if PG:
+        _reset_pg_schema()
+        settings = Settings(database_url=PG_URL, database_admin_url=PG_ADMIN_URL, **common)
+    else:
+        settings = Settings(database_url="sqlite://", **common)
+    a = create_app(settings)
+    yield a
+    a.state.engine.dispose()
+    a.state.admin_engine.dispose()
 
 
 @pytest.fixture()
@@ -73,7 +98,7 @@ def client(app):
 @pytest.fixture()
 def make_user(app):
     def _make(org_name: str, email: str, org_id: str | None = None) -> tuple[str, str]:
-        with app.state.sessions() as s:
+        with app.state.admin_sessions() as s:  # maintenance path: owner role bypasses RLS
             if org_id is None:
                 org = Organisation(name=org_name)
                 s.add(org)

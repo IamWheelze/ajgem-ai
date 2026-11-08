@@ -14,6 +14,10 @@ from .services.storage import LocalObjectStore, SignatureScanner, UrlSigner
 @dataclass
 class Settings:
     database_url: str = field(default_factory=lambda: os.environ.get("AJGEM_DATABASE_URL", "sqlite:///./var/ajgem.db"))
+    # Owner role for schema setup, RLS installation and maintenance tools (PostgreSQL). Defaults to database_url.
+    database_admin_url: str | None = field(default_factory=lambda: os.environ.get("AJGEM_DATABASE_ADMIN_URL") or None)
+    # Refuse to serve requests on PostgreSQL with a role that bypasses RLS, unless explicitly allowed.
+    allow_rls_bypass: bool = field(default_factory=lambda: os.environ.get("AJGEM_ALLOW_RLS_BYPASS") == "1")
     data_dir: Path = field(default_factory=lambda: Path(os.environ.get("AJGEM_DATA_DIR", "./var/objects")))
     url_secret: bytes = field(
         default_factory=lambda: os.environ.get("AJGEM_URL_SECRET", "").encode() or secrets.token_bytes(32)
