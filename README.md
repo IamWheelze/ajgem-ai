@@ -162,9 +162,11 @@ To run the whole test suite against PostgreSQL, set `AJGEM_TEST_PG=1`. The defau
 Narrative questions such as "Where was spodumene reported?" can be answered by Claude. Answers are built only from cited document excerpts, and uncited text or figures not found in the cited text are withheld. Generation is off unless both of these are true:
 
 1. **Server configuration:** set `AJGEM_LLM_PROVIDER=anthropic` with credentials in `ANTHROPIC_API_KEY`. The optional settings are `AJGEM_LLM_MODEL` (default `claude-opus-5-5`), `AJGEM_LLM_EFFORT` (default `medium`), `AJGEM_LLM_TIMEOUT` (seconds), and `AJGEM_LLM_FALLBACKS` (`default`, or empty to disable the server-side refusal fallback).
-2. **Project policy:** an administrator allows it for the project under Administration → Generated answers and records the processing basis there.
+2. **Project policy:** an administrator allows it for the project under Administration → Language model and records the processing basis there.
 
 Otherwise the assistant returns search results only. Numerical questions never use the model.
+
+The same setting enables **model-assisted extraction** for PDF tables that the line-pattern extractor cannot read, such as wide certificates with analytes and units in a header row. The model receives the page's numbered lines and must return each cell as the exact text and line where it is printed (structured output against a JSON schema). A deterministic check rejects any cell that is not on the cited line verbatim, any reformatted or computed figure, and any result not on its sample's line. Invalid output is retried once with the reasons, and then the page goes to manual review (`EXTRACTION_MANUAL_REQUIRED`). Accepted rows become ordinary candidates, flagged `MODEL_EXTRACTED_VERIFY`, and still need second-person approval. Without the setting, such lines are flagged `UNPARSED_TABLE_LINES` instead of being skipped silently.
 
 The commands above use SQLite in `./var/` for development. Set `AJGEM_DATABASE_URL` for
 PostgreSQL, where decimals are stored as `NUMERIC`. Requests authenticate with an

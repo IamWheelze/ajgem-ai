@@ -134,7 +134,7 @@ function LanguageModelPolicy() {
   return (
     <section className="card">
       <div className="card-head">
-        <h2>Generated answers (language model)</h2>
+        <h2>Language model (answers and extraction)</h2>
         {policy.allow_external_llm ? <span className="badge ok">allowed</span> : <span className="badge">off</span>}
       </div>
       <div className="card-pad stack">
@@ -142,6 +142,12 @@ function LanguageModelPolicy() {
           Narrative questions can be answered by an external language model that sees only the authorised document excerpts
           retrieval selects. Every statement must cite those excerpts; uncited text and figures not found in the cited text are withheld.
           Numerical questions always use the deterministic tools.
+        </p>
+        <p className="muted" style={{ margin: 0 }}>
+          The same permission lets PDF processing send a page's text to the model when the pattern extractor cannot read a table
+          (for example a wide certificate with analytes in the header). Every cell the model returns must be found verbatim on
+          the cited line or it is rejected; invalid output is retried once and then sent to manual review. Model-read rows are
+          ordinary candidates and still need a second person's approval.
         </p>
         <div className="faint">
           Server provider: {llm?.configured ? <strong>{llm.provider} · {llm.model}</strong> : <>none configured (set <code>AJGEM_LLM_PROVIDER=anthropic</code> and credentials on the server)</>}
