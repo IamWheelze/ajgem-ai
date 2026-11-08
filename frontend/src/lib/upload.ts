@@ -1,5 +1,5 @@
 /** Resumable, verified chunked upload (FR03). Survives reloads: the server keeps confirmed ranges. */
-import { API_BASE, ApiError, api, getUserId } from "./api";
+import { API_BASE, ApiError, api, authHeaders } from "./api";
 
 export const CHUNK_BYTES = 1024 * 1024;
 
@@ -67,7 +67,7 @@ export async function sendFile(o: UploadOptions): Promise<UploadSession> {
           method: "PUT",
           body: part,
           signal: o.signal,
-          headers: { "X-User-Id": getUserId() ?? "", "X-Chunk-SHA256": partSha, "Content-Type": "application/octet-stream" },
+          headers: { ...authHeaders(), "X-Chunk-SHA256": partSha, "Content-Type": "application/octet-stream" },
         });
         if (!res.ok) {
           const j = await res.json().catch(() => null);

@@ -1,5 +1,7 @@
 /** Typed client for the AJGEM backend. All calls go through /api (Vite proxy or reverse proxy). */
 
+import { clearIdToken, getIdToken } from "./auth";
+
 export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
 
 const USER_KEY = "ajgem.devUserId";
@@ -21,6 +23,14 @@ export function setUserId(id: string | null): void {
   }
 }
 
+/** Credentials for API calls: the OIDC ID token when signed in, else the development user id. */
+export function authHeaders(): Record<string, string> {
+  const token = getIdToken();
+  if (token) return { Authorization: `Bearer ${token}` };
+  const uid = getUserId();
+  return uid ? { "X-User-Id": uid } : {};
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -37,8 +47,7 @@ type Init = Omit<RequestInit, "body"> & { body?: unknown; raw?: BodyInit; query?
 
 export async function request<T>(path: string, init: Init = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  const uid = getUserId();
-  if (uid) headers.set("X-User-Id", uid);
+  for (const [k, v] of Object.entries(authHeaders())) headers.set(k, v);
   let body: BodyInit | undefined = init.raw;
   if (init.body !== undefined) {
     headers.set("Content-Type", "application/json");
@@ -55,8 +64,14 @@ export async function request<T>(path: string, init: Init = {}): Promise<T> {
   if (res.status === 204) return undefined as T;
   const type = res.headers.get("content-type") ?? "";
   if (!res.ok) {
-    if (type.includes("json")) {
-      const j = await res.json();
+    const j = type.includes("json") ? await res.json() : null;
+    if (res.status === 401 && getIdToken()) {
+      // Expired, revoked or unregistered: drop the session and tell the sign-in page why.
+      try { sessionStorage.setItem("ajgem.authMessage", j?.error?.message ?? "Please sign in again"); } catch { /* ignore */ }
+      clearIdToken();
+      window.dispatchEvent(new Event("ajgem:signed-out"));
+    }
+    if (j) {
       throw new ApiError(res.status, j?.error?.code ?? "ERROR", j?.error?.message ?? res.statusText, j?.error?.details, j?.correlation_id);
     }
     throw new ApiError(res.status, "NETWORK", res.statusText || "Request failed");

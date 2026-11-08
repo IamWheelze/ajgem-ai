@@ -116,6 +116,19 @@ jobs:
       - name: Run milestone walkthrough
         working-directory: frontend
         run: node e2e/milestone.cjs
+      - name: Restart in OIDC mode with the development mock identity provider
+        working-directory: backend
+        run: |
+          pkill -f "ajgem serve" || true
+          rm -rf var && python scripts/seed_demo.py
+          nohup python scripts/mock_oidc.py > idp.log 2>&1 &
+          AJGEM_AUTH_MODE=oidc AJGEM_OIDC_ISSUER=http://127.0.0.1:9000 AJGEM_OIDC_CLIENT_ID=ajgem-web \
+            nohup python -m ajgem serve > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8000/api/auth/config > /dev/null && exit 0; sleep 1; done
+          cat server.log idp.log; exit 1
+      - name: Run OIDC sign-in walkthrough
+        working-directory: frontend
+        run: node e2e/oidc.cjs
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -123,4 +136,5 @@ jobs:
           path: |
             frontend/e2e/out
             backend/server.log
+            backend/idp.log
           retention-days: 7

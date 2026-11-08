@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..context import Context, Settings
 from .. import migrate, rls
+from ..auth import OidcSettings, OidcVerifier, bearer_token, resolve_user_id
 from ..db import bind_rls_context, make_engine, make_session_factory
 from ..errors import ApiError, forbidden
 from ..models import (
@@ -62,6 +63,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     AdminSessions = make_session_factory(admin_engine)
     # Separate owner-role sessions only when a distinct owner database role is configured.
     Privileged = AdminSessions if admin_engine is not engine else None
+    oidc = None
+    if settings.auth_mode == "oidc":
+        if not (settings.oidc_issuer and settings.oidc_client_id):
+            raise RuntimeError("AJGEM_AUTH_MODE=oidc needs AJGEM_OIDC_ISSUER and AJGEM_OIDC_CLIENT_ID")
+        oidc = OidcVerifier(OidcSettings(
+            issuer=settings.oidc_issuer, client_id=settings.oidc_client_id, audience=settings.oidc_audience,
+            jwks_url=settings.oidc_jwks_url, max_session_age_seconds=int(settings.oidc_max_session_hours * 3600),
+            mfa_amr={a.strip() for a in settings.oidc_mfa_amr.split(",") if a.strip()},
+            mfa_acr={a.strip() for a in settings.oidc_mfa_acr.split(",") if a.strip()}))
+    elif settings.auth_mode != "dev":
+        raise RuntimeError(f"Unknown AJGEM_AUTH_MODE {settings.auth_mode!r} (dev | oidc)")
     ctx = Context.from_settings(settings)
     app = FastAPI(title="AJGEM Exploration Evidence API", version="0.1.0")
     app.state.ctx, app.state.engine, app.state.sessions = ctx, engine, SessionLocal
@@ -97,9 +109,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         finally:
             s.close()
 
-    def principal(x_user_id: str | None = Header(default=None), s: Session = Depends(db)) -> Principal:
-        # Development identity stub: production replaces this with a managed identity
-        # provider (OIDC, MFA for admins/reviewers, server-side revocation; NF02).
+    def principal(x_user_id: str | None = Header(default=None), authorization: str | None = Header(default=None),
+                  s: Session = Depends(db)) -> Principal:
+        if oidc is not None:
+            # NF02: a verified ID token from the organisation's identity provider; X-User-Id is ignored.
+            token = bearer_token(authorization)
+            if not token:
+                raise ApiError("AUTH_REQUIRED", "Sign in required")
+            ident = oidc.verify(token)
+            return load_principal(s, resolve_user_id(s, Privileged, ident), mfa=ident.mfa)
+        # Development identity stub (AJGEM_AUTH_MODE=dev): never use with real data.
         return load_principal(s, x_user_id)
 
     def via(model, entity_id: str, s: Session, p: Principal, op: str = "project.read") -> tuple[ProjectAccess, object]:
@@ -441,11 +460,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/me")
     def me(s: Session = Depends(db), p: Principal = Depends(principal)):
         u, org = s.get(User, p.user_id), s.get(Organisation, p.organisation_id)
-        return {"id": u.id, "email": u.email, "name": u.name, "organisation": {"id": org.id, "name": org.name}}
+        return {"id": u.id, "email": u.email, "name": u.name, "organisation": {"id": org.id, "name": org.name},
+                "mfa": p.mfa, "auth_mode": "oidc" if oidc is not None else "dev"}
+
+    @app.get("/auth/config")
+    def auth_config():
+        """Public: tells the web client how to sign in (no secrets: OIDC public client with PKCE)."""
+        if oidc is None:
+            return {"mode": "dev", "dev_login": settings.dev_login}
+        return oidc.client_config()
 
     @app.get("/dev/users")
     def dev_users():
-        if not settings.dev_login:
+        if not settings.dev_login or oidc is not None:
             raise forbidden()
         # Cross-organisation listing for the development sign-in picker: needs the owner role under RLS.
         with AdminSessions() as s:

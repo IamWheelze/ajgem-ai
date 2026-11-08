@@ -4,6 +4,7 @@
     python -m ajgem create-user ORG EMAIL       # create an organisation (if new) and a user; prints the user id
     python -m ajgem migrate                     # apply pending migrations (owner role); --stamp REV adopts a DB
     python -m ajgem db-status                   # show the database revision and the latest available
+    python -m ajgem revoke-sessions EMAIL       # refuse every sign-in token issued to EMAIL before now (NF02)
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def main(argv: list[str]) -> int:
     from .context import Settings
     from .models import Organisation, User
 
-    if not argv or argv[0] not in {"serve", "create-user", "migrate", "db-status"}:
+    if not argv or argv[0] not in {"serve", "create-user", "migrate", "db-status", "revoke-sessions"}:
         print(__doc__)
         return 2
     if argv[0] in {"migrate", "db-status"}:
@@ -66,6 +67,18 @@ def main(argv: list[str]) -> int:
         import uvicorn
 
         uvicorn.run(with_web_client(app), host="127.0.0.1", port=8000)
+        return 0
+    if argv[0] == "revoke-sessions":
+        from datetime import datetime, timezone
+
+        with app.state.admin_sessions() as s:  # owner role: user lookup across organisations
+            user = s.scalar(select(User).where(User.email == argv[1]))
+            if user is None:
+                print(f"no user {argv[1]}")
+                return 1
+            user.sessions_revoked_before = datetime.now(timezone.utc)
+            s.commit()
+            print(f"sessions revoked for {argv[1]}")
         return 0
     org_name, email = argv[1], argv[2]
     with app.state.admin_sessions() as s:  # owner role: creating organisations and users bypasses RLS

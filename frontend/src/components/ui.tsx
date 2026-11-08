@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, type Issue, type Outcome } from "../lib/api";
 import { OUTCOME_LABEL } from "../lib/format";
+import { useSession } from "../lib/session";
 
 export function ErrorNotice({ error, title }: { error: unknown; title?: string }) {
   if (!error) return null;
@@ -18,8 +19,18 @@ export function ErrorNotice({ error, title }: { error: unknown; title?: string }
             <pre className="json">{JSON.stringify(details, null, 2)}</pre>
           </details>
         )}
+        {e instanceof ApiError && e.code === "MFA_REQUIRED" && <MfaRetry />}
         {e instanceof ApiError && e.correlationId && <div className="faint">Correlation ID {e.correlationId}</div>}
       </div>
+    </div>
+  );
+}
+
+function MfaRetry() {
+  const { signOut } = useSession();
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button className="small" onClick={() => { signOut(); window.location.assign("/login"); }}>Sign in again with your second factor</button>
     </div>
   );
 }

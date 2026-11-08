@@ -45,11 +45,17 @@ class Organisation(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),)
     id: Mapped[str] = _id()
     organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"), index=True)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     name: Mapped[str] = mapped_column(String(200))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # NF02: the identity-provider subject this account is linked to (set on first verified sign-in).
+    oidc_issuer: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    oidc_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Tokens issued before this instant are refused (server-side session revocation).
+    sessions_revoked_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _ts()
 
 
