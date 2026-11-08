@@ -50,7 +50,7 @@ def main(argv: list[str]) -> int:
         uvicorn.run(with_web_client(app), host="127.0.0.1", port=8000)
         return 0
     org_name, email = argv[1], argv[2]
-    with app.state.sessions() as s:
+    with app.state.admin_sessions() as s:  # owner role: creating organisations and users bypasses RLS
         org = s.scalar(select(Organisation).where(Organisation.name == org_name)) or Organisation(name=org_name)
         s.add(org)
         s.flush()

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..db import set_rls_context
 from ..errors import ApiError, forbidden
 from ..models import Membership, Project, User
 
@@ -60,9 +61,12 @@ class ProjectAccess:
 def load_principal(db: Session, user_id: str | None) -> Principal:
     if not user_id:
         raise ApiError("AUTH_REQUIRED", "Authentication required")
+    # RLS context (PostgreSQL): the user id first, so the user's own row is readable, then the organisation.
+    set_rls_context(db, user_id=user_id, org_id=None)
     user = db.get(User, user_id)
     if user is None or not user.active:
         raise ApiError("AUTH_REQUIRED", "Authentication required")
+    set_rls_context(db, org_id=user.organisation_id)
     return Principal(user.id, user.organisation_id)
 
 

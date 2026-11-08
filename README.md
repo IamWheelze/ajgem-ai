@@ -9,7 +9,7 @@ calculations are mandatory.
 This repository holds the **Phase 1 vertical slice** (FRD §13): a FastAPI backend and a React +
 MapLibre web client covering the FRD §8 screen inventory. See
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for the status of each requirement and what is
-deliberately not built yet. The main gaps are PostgreSQL RLS, managed identity, and retention and deletion.
+deliberately not built yet. The main gaps are managed identity, migrations, and retention and deletion.
 
 ## What the slice does
 
@@ -117,6 +117,22 @@ Open http://localhost:5173 and pick a demo user. Vite proxies `/api` to the back
 ```bash
 cd frontend && npm test && npm run typecheck
 ```
+
+### PostgreSQL with row-level security
+
+SQLite is fine for local development, but pilots should run on PostgreSQL, where row-level security enforces tenant isolation in the database as well as in the application. You need two roles: an owner for the schema, and a runtime role that RLS applies to.
+
+```bash
+sudo -u postgres psql -c "CREATE ROLE ajgem_owner LOGIN PASSWORD 'change-me' BYPASSRLS" -c "CREATE ROLE ajgem_app LOGIN PASSWORD 'change-me-too' NOBYPASSRLS" -c "CREATE DATABASE ajgem OWNER ajgem_owner"
+```
+
+```bash
+export AJGEM_DATABASE_URL=postgresql+psycopg://ajgem_app:change-me-too@127.0.0.1/ajgem AJGEM_DATABASE_ADMIN_URL=postgresql+psycopg://ajgem_owner:change-me@127.0.0.1/ajgem
+```
+
+On start-up the app creates the schema and installs the RLS policies and grants as the owner, then serves requests as `ajgem_app`. It refuses to start if the runtime role can bypass RLS. The owner role is the only bypass; use it only for maintenance tools such as `scripts/seed_demo.py`.
+
+To run the whole test suite against PostgreSQL, set `AJGEM_TEST_PG=1`. The default database URLs are in `tests/conftest.py`.
 
 ### Generated answers (optional)
 
