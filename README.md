@@ -9,8 +9,7 @@ calculations are mandatory.
 This repository holds the **Phase 1 vertical slice** (FRD §13): a FastAPI backend and a React +
 MapLibre web client covering the FRD §8 screen inventory. See
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for the status of each requirement and what is
-deliberately not built yet. The main gaps are the language-model adapters, PostgreSQL RLS,
-managed identity, and retention and deletion.
+deliberately not built yet. The main gaps are PostgreSQL RLS, managed identity, and retention and deletion.
 
 ## What the slice does
 
@@ -118,6 +117,15 @@ Open http://localhost:5173 and pick a demo user. Vite proxies `/api` to the back
 ```bash
 cd frontend && npm test && npm run typecheck
 ```
+
+### Generated answers (optional)
+
+Narrative questions such as "Where was spodumene reported?" can be answered by Claude. Answers are built only from cited document excerpts, and uncited text or figures not found in the cited text are withheld. Generation is off unless both of these are true:
+
+1. **Server configuration:** set `AJGEM_LLM_PROVIDER=anthropic` with credentials in `ANTHROPIC_API_KEY`. The optional settings are `AJGEM_LLM_MODEL` (default `claude-opus-5-5`), `AJGEM_LLM_EFFORT` (default `medium`), `AJGEM_LLM_TIMEOUT` (seconds), and `AJGEM_LLM_FALLBACKS` (`default`, or empty to disable the server-side refusal fallback).
+2. **Project policy:** an administrator allows it for the project under Administration → Generated answers and records the processing basis there.
+
+Otherwise the assistant returns search results only. Numerical questions never use the model.
 
 The commands above use SQLite in `./var/` for development. Set `AJGEM_DATABASE_URL` for
 PostgreSQL, where decimals are stored as `NUMERIC`. Requests authenticate with an

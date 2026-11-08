@@ -7,6 +7,7 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .services.llm import provider_from_settings
 from .services.storage import LocalObjectStore, SignatureScanner, UrlSigner
 
 
@@ -27,6 +28,14 @@ class Settings:
     retry_backoff_seconds: float = 0.5
     query_row_limit: int = 50_000
     ocr_timeout_seconds: int = 120
+    # Language-model adapter for narrative answers (FR17). "none" disables generation entirely.
+    llm_provider: str = field(default_factory=lambda: os.environ.get("AJGEM_LLM_PROVIDER", "none"))
+    llm_model: str = field(default_factory=lambda: os.environ.get("AJGEM_LLM_MODEL", "claude-opus-5-5"))
+    llm_effort: str = field(default_factory=lambda: os.environ.get("AJGEM_LLM_EFFORT", "medium"))
+    llm_timeout_seconds: float = field(default_factory=lambda: float(os.environ.get("AJGEM_LLM_TIMEOUT", "60")))
+    llm_max_output_tokens: int = 4000
+    # Server-side refusal fallback mode ("default", or "" to disable).
+    llm_fallbacks: str = field(default_factory=lambda: os.environ.get("AJGEM_LLM_FALLBACKS", "default"))
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 
@@ -37,6 +46,7 @@ class Context:
     store: LocalObjectStore
     scanner: SignatureScanner
     signer: UrlSigner
+    answer_provider: object | None = None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "Context":
@@ -45,4 +55,5 @@ class Context:
             store=LocalObjectStore(settings.data_dir),
             scanner=SignatureScanner(),
             signer=UrlSigner(settings.url_secret),
+            answer_provider=provider_from_settings(settings),
         )

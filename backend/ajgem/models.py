@@ -79,6 +79,8 @@ class ProjectConfigRevision(Base):
     working_crs: Mapped[str | None] = mapped_column(String(200), nullable=True)
     analyte_policy: Mapped[dict] = mapped_column(JSON, default=dict)
     retention_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    # NF04 processing policy: whether evidence may be sent to an external language model, and which provider.
+    provider_policy: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
 

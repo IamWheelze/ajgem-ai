@@ -106,9 +106,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def get_project(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
         a = project_access(s, p, pid)
         cfg = projects.current_config(s, pid)
-        return {"id": pid, "name": a.project.name, "roles": sorted(a.roles), "config": None if cfg is None else {
+        prov = ctx.answer_provider
+        llm = {"configured": prov is not None, "provider": getattr(prov, "name", None), "model": getattr(prov, "model", None)}
+        return {"id": pid, "name": a.project.name, "roles": sorted(a.roles), "llm": llm, "config": None if cfg is None else {
             "revision": cfg.revision, "boundary": cfg.boundary, "working_crs": cfg.working_crs,
             "analyte_policy": cfg.analyte_policy, "retention_policy": cfg.retention_policy,
+            "provider_policy": cfg.provider_policy or {},
             "created_by": cfg.created_by, "created_at": cfg.created_at.isoformat()}}
 
     @app.put("/projects/{pid}/config")
@@ -313,7 +316,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/projects/{pid}/questions")
     def ask(pid: str, body: S.QuestionIn, s: Session = Depends(db), p: Principal = Depends(principal)):
-        return queries.ask(s, project_access(s, p, pid), body.question, body.tool, body.params)
+        return queries.ask(s, project_access(s, p, pid), body.question, body.tool, body.params,
+                           provider=ctx.answer_provider)
 
     @app.get("/answers/{aid}")
     def get_answer(aid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
