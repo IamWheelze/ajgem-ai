@@ -7,7 +7,7 @@ import { useProject } from "../components/Layout";
 import { Empty, ErrorNotice, StatusBadge } from "../components/ui";
 import { JobPanel } from "./Upload";
 
-interface ExportRow { id: string; format: string; purpose: string; created_at: string; manifest: Record<string, unknown> & { record_count: number; unmapped_count: number; coordinates_withheld: boolean; unresolved: Record<string, number>; data_sha256: string } }
+interface ExportRow { id: string; format: string; purpose: string; created_at: string; manifest: Record<string, unknown> & { record_count?: number; unmapped_count?: number; coordinates_withheld?: boolean; unresolved?: Record<string, number>; data_sha256?: string; revoked?: { message: string; deletion_request_id: string } } }
 
 export default function Jobs() {
   const { pid, can } = useProject();
@@ -87,10 +87,10 @@ function Exports() {
                 <td className="faint">{when(e.created_at)}</td>
                 <td>{e.format}</td>
                 <td>{e.purpose}</td>
-                <td className="num">{e.manifest.record_count}</td>
-                <td className="num">{e.manifest.unmapped_count}</td>
-                <td>{e.manifest.unresolved.open_conflicts ? <span className="badge bad">{e.manifest.unresolved.open_conflicts} open conflicts</span> : <span className="faint">none</span>}</td>
-                <td><button className="small" onClick={(ev) => { ev.stopPropagation(); download.run(e.id); }}>Download</button></td>
+                <td className="num">{e.manifest.record_count ?? "—"}</td>
+                <td className="num">{e.manifest.unmapped_count ?? "—"}</td>
+                <td>{e.manifest.revoked ? <span className="badge bad">withdrawn — evidence deleted</span> : e.manifest.unresolved?.open_conflicts ? <span className="badge bad">{e.manifest.unresolved.open_conflicts} open conflicts</span> : <span className="faint">none</span>}</td>
+                <td>{!e.manifest.revoked && <button className="small" onClick={(ev) => { ev.stopPropagation(); download.run(e.id); }}>Download</button>}</td>
               </tr>
             ))}
           </tbody>
@@ -102,6 +102,8 @@ function Exports() {
 
 function Manifest({ e, onDownload }: { e: ExportRow; onDownload: () => void }) {
   const m = e.manifest;
+  if (m.revoked)
+    return <div className="card-pad"><div className="notice bad"><div><strong>Export withdrawn</strong>{m.revoked.message} Its file has been erased.</div></div></div>;
   return (
     <div className="card-pad stack" style={{ borderTop: "1px solid var(--border)", borderBottom: "1px solid var(--border)", background: "var(--surface-2)" }}>
       <div className="row between"><strong>Manifest · {e.purpose}</strong><button className="primary small" onClick={onDownload}>Download ZIP</button></div>
@@ -109,8 +111,8 @@ function Manifest({ e, onDownload }: { e: ExportRow; onDownload: () => void }) {
         <span className="badge">{m.record_count} records</span>
         <span className="badge">{m.unmapped_count} unmapped</span>
         {m.coordinates_withheld && <span className="badge warn">exact coordinates withheld</span>}
-        {Object.entries(m.unresolved).map(([k, v]) => <span key={k} className={`badge ${v ? "warn" : ""}`}>{k.replaceAll("_", " ")}: {v}</span>)}
-        <span className="faint mono">data sha256 {m.data_sha256.slice(0, 16)}…</span>
+        {Object.entries(m.unresolved ?? {}).map(([k, v]) => <span key={k} className={`badge ${v ? "warn" : ""}`}>{k.replaceAll("_", " ")}: {v}</span>)}
+        <span className="faint mono">data sha256 {m.data_sha256?.slice(0, 16)}…</span>
       </div>
       <details><summary>Full manifest</summary><pre className="json">{JSON.stringify(m, null, 2)}</pre></details>
     </div>

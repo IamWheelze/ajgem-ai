@@ -5,13 +5,16 @@ import { bytes, when } from "../lib/format";
 import { useResource } from "../lib/hooks";
 import { completeUpload, sendFile, type UploadResult, type UploadSession } from "../lib/upload";
 import { useProject } from "../components/Layout";
+import { DeleteForm, TombstoneSummary, type Tombstone } from "../components/DeleteForm";
 import { ImportMapper } from "../components/ImportMapper";
 import { Empty, ErrorNotice, StatusBadge } from "../components/ui";
 
 type Phase = "choose" | "uploading" | "paused" | "decide" | "done";
 
 export default function Upload() {
-  const { pid, can, reload } = useProject();
+  const { pid, can, reload, roles } = useProject();
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [tomb, setTomb] = useState<Tombstone | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [rights, setRights] = useState("");
   const [confirmed, setConfirmed] = useState(false);
@@ -23,7 +26,7 @@ export default function Upload() {
   const [error, setError] = useState<unknown>();
   const [over, setOver] = useState(false);
   const abort = useRef<AbortController | null>(null);
-  const docs = useResource(() => api.get<DocumentList>(`/projects/${pid}/documents`), [pid, result]);
+  const docs = useResource(() => api.get<DocumentList>(`/projects/${pid}/documents`), [pid, result, tomb]);
 
   if (!can("upload")) return <div className="page"><ErrorNotice error={new Error("Uploading requires the analyst or field-contributor role on this project.")} title="Not permitted" /></div>;
 
@@ -144,14 +147,15 @@ export default function Upload() {
 
       {phase === "done" && result && <Outcome result={result} onReset={reset} />}
 
+      {tomb && <TombstoneSummary t={tomb} />}
       <section className="card">
         <div className="card-head"><h2>Source documents</h2></div>
         {!docs.data?.documents.length ? <Empty>No documents yet.</Empty> : (
           <div className="table-wrap">
             <table className="data">
-              <thead><tr><th>Document</th><th>Version</th><th>Format</th><th>Status</th><th>Scan</th><th className="num">Size</th><th>SHA-256</th><th>Uploaded</th></tr></thead>
+              <thead><tr><th>Document</th><th>Version</th><th>Format</th><th>Status</th><th>Scan</th><th className="num">Size</th><th>SHA-256</th><th>Uploaded</th>{roles.has("admin") && <th />}</tr></thead>
               <tbody>
-                {docs.data.documents.flatMap((d) => d.versions.map((v) => (
+                {docs.data.documents.flatMap((d) => d.versions.map((v) => [
                   <tr key={v.id}>
                     <td>{d.title}</td>
                     <td>v{v.version_no}</td>
@@ -161,8 +165,15 @@ export default function Upload() {
                     <td className="num">{bytes(v.size)}</td>
                     <td className="mono faint" title={v.sha256}>{v.sha256.slice(0, 12)}…</td>
                     <td className="faint">{when(v.created_at)}</td>
-                  </tr>
-                )))}
+                    {roles.has("admin") && <td>{v.status !== "deleted" && <button className="small danger" onClick={() => { setTomb(null); setDeleting(deleting === v.id ? null : v.id); }}>Delete…</button>}</td>}
+                  </tr>,
+                  deleting === v.id && (
+                    <tr key={`${v.id}-del`}><td colSpan={9}>
+                      <DeleteForm url={`/versions/${v.id}`} what={`“${v.filename}” v${v.version_no}`} confirmText={v.filename}
+                        onCancel={() => setDeleting(null)} onDone={(t) => { setDeleting(null); setTomb(t); reload(); }} />
+                    </td></tr>
+                  ),
+                ]))}
               </tbody>
             </table>
           </div>

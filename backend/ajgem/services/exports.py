@@ -207,5 +207,7 @@ def download_export(db: Session, access: ProjectAccess, export_id: str) -> Expor
     e = db.get(Export, export_id)
     if e is None or e.project_id != access.project.id:
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
+    if (e.manifest or {}).get("revoked"):
+        raise ApiError("EVIDENCE_DELETED", e.manifest["revoked"]["message"])
     audit.record(db, access.principal, "export.download", "export", e.id, project_id=e.project_id)
     return e

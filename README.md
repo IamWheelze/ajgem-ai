@@ -9,7 +9,7 @@ calculations are mandatory.
 This repository holds the **Phase 1 vertical slice** (FRD §13): a FastAPI backend and a React +
 MapLibre web client covering the FRD §8 screen inventory. See
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) for the status of each requirement and what is
-deliberately not built yet. The main gaps are managed identity, and retention and deletion.
+deliberately not built yet. The main gap is managed identity (the sign-in is still a development stub).
 
 ## What the slice does
 

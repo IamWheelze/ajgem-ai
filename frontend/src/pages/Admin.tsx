@@ -1,6 +1,8 @@
 /** Administration: members and grants, project configuration, conversion factors, audit (FR01, FR02, FR21). */
 import { useState } from "react";
-import { api, type ProjectDetail } from "../lib/api";
+import { useNavigate } from "react-router-dom";
+import { api, type DocumentList, type ProjectDetail } from "../lib/api";
+import { DeleteForm, TombstoneSummary, type Tombstone } from "../components/DeleteForm";
 import { ROLE_LABEL, when } from "../lib/format";
 import { useAction, useResource } from "../lib/hooks";
 import { useProject } from "../components/Layout";
@@ -21,6 +23,8 @@ export default function Admin() {
       {roles.has("admin") && <LanguageModelPolicy />}
       <Factors />
       {roles.has("admin") && <Audit />}
+      {roles.has("admin") && <Documents />}
+      {roles.has("admin") && <DangerZone />}
     </div>
   );
 }
@@ -151,6 +155,71 @@ function LanguageModelPolicy() {
         </label>
         <ErrorNotice error={save.error} />
         <div><button className="primary" disabled={(allow === null && notes === null) || (on && !text.trim()) || save.pending} onClick={save.run}>Save as new configuration revision</button></div>
+      </div>
+    </section>
+  );
+}
+
+function Documents() {
+  const { pid, reload } = useProject();
+  const [tomb, setTomb] = useState<Tombstone | null>(null);
+  const docs = useResource(() => api.get<DocumentList>(`/projects/${pid}/documents`), [pid, tomb]);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const versions = (docs.data?.documents ?? []).flatMap((d) => d.versions);
+  return (
+    <section className="card">
+      <div className="card-head"><h2>Source documents and deletion</h2><span className="faint">Retention: kept until an administrator deletes them</span></div>
+      {tomb && <div className="card-pad"><TombstoneSummary t={tomb} /></div>}
+      {!versions.length ? <Empty>No documents.</Empty> : (
+        <table className="data">
+          <thead><tr><th>File</th><th>Version</th><th>Status</th><th>SHA-256</th><th>Uploaded</th><th /></tr></thead>
+          <tbody>
+            {versions.flatMap((v) => [
+              <tr key={v.id}>
+                <td>{v.filename}</td>
+                <td>v{v.version_no}</td>
+                <td><span className={`badge ${v.status === "deleted" ? "bad" : v.status === "active" ? "ok" : ""}`}>{v.status}</span></td>
+                <td className="mono faint" title={v.sha256}>{v.sha256.slice(0, 12)}…</td>
+                <td className="faint">{when(v.created_at)}</td>
+                <td>{v.status !== "deleted" && <button className="small danger" onClick={() => { setTomb(null); setDeleting(deleting === v.id ? null : v.id); }}>Delete…</button>}</td>
+              </tr>,
+              deleting === v.id && (
+                <tr key={`${v.id}-del`}><td colSpan={6}>
+                  <DeleteForm url={`/versions/${v.id}`} what={`“${v.filename}” v${v.version_no}`} confirmText={v.filename}
+                    onCancel={() => setDeleting(null)} onDone={(t) => { setDeleting(null); setTomb(t); reload(); }} />
+                </td></tr>
+              ),
+            ])}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+function DangerZone() {
+  const { summary } = useProject();
+  const nav = useNavigate();
+  const [open, setOpen] = useState(false);
+  const [tomb, setTomb] = useState<Tombstone | null>(null);
+  return (
+    <section className="card">
+      <div className="card-head"><h2>Delete this project</h2></div>
+      <div className="card-pad stack">
+        {tomb ? (
+          <>
+            <TombstoneSummary t={tomb} />
+            <div><button onClick={() => nav("/projects")}>Back to projects</button></div>
+          </>
+        ) : open ? (
+          <DeleteForm url={`/projects/${summary.project.id}`} what={`project “${summary.project.name}”`} confirmText={summary.project.name}
+            onCancel={() => setOpen(false)} onDone={setTomb} />
+        ) : (
+          <div className="row">
+            <span className="muted">Removes every document, record, answer and export in this project and revokes all memberships.</span>
+            <button className="danger" onClick={() => setOpen(true)}>Delete project…</button>
+          </div>
+        )}
       </div>
     </section>
   );

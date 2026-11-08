@@ -101,6 +101,11 @@ class QuestionIn(Strict):
     params: dict[str, Any] | None = None
 
 
+class DeletionIn(Strict):
+    reason: str
+    confirm: str
+
+
 class ExportIn(Strict):
     format: Literal["csv", "geojson"]
     filters: dict[str, Any] = Field(default_factory=dict)

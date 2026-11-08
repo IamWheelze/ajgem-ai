@@ -23,32 +23,18 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def _runtime_role() -> str:
-    role = context.config.attributes.get("runtime_role")
-    if not role:
-        from sqlalchemy.engine import make_url
-
-        from ajgem.context import Settings
-
-        role = make_url(Settings().database_url).username
-    if not role:
-        raise RuntimeError("Cannot determine the runtime role for RLS grants; set AJGEM_DATABASE_URL")
-    return role
-
-
 def upgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name != "postgresql":
-        return
-    for sql in rls.statements(_runtime_role()):
-        bind.execute(text(sql))
+    rls.apply_in_migration(op, context)
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         return
-    for table in rls.POLICIES:
+    from sqlalchemy import inspect
+
+    existing = set(inspect(bind).get_table_names())
+    for table in [t for t in rls.POLICIES if t in existing]:
         bind.execute(text(f"DROP POLICY IF EXISTS tenant_isolation ON {table}"))
         bind.execute(text(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY"))
         bind.execute(text(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY"))

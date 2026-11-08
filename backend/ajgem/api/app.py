@@ -34,7 +34,7 @@ from ..models import (
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import processing, projects, queries, records, uploads
+from ..services import deletion, processing, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
@@ -60,6 +60,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     SessionLocal = make_session_factory(engine)
     bind_rls_context(SessionLocal)
     AdminSessions = make_session_factory(admin_engine)
+    # Separate owner-role sessions only when a distinct owner database role is configured.
+    Privileged = AdminSessions if admin_engine is not engine else None
     ctx = Context.from_settings(settings)
     app = FastAPI(title="AJGEM Exploration Evidence API", version="0.1.0")
     app.state.ctx, app.state.engine, app.state.sessions = ctx, engine, SessionLocal
@@ -399,6 +401,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(e.payload, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="export-{e.id}.zip"',
                                  "Cache-Control": "private, no-store"})
+
+    # ------------------------------------------------------------ retention & deletion (FR22)
+    @app.delete("/versions/{vid}")
+    def delete_version(vid: str, body: S.DeletionIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(DocumentVersion, vid, s, p)
+        dr = deletion.delete_version(s, ctx, Privileged, a, vid, body.reason, body.confirm)
+        s.commit()  # content removal is committed before audit details are scrubbed
+        return deletion.finish(s, Privileged, dr)
+
+    @app.delete("/projects/{pid}")
+    def delete_project(pid: str, body: S.DeletionIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        dr = deletion.delete_project(s, ctx, Privileged, project_access(s, p, pid), body.reason, body.confirm)
+        s.commit()
+        return deletion.finish(s, Privileged, dr)
+
+    @app.get("/deletions/{did}")
+    def get_deletion(did: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        from ..models import DeletionRequest
+
+        dr = s.get(DeletionRequest, did)
+        if dr is None or dr.organisation_id != p.organisation_id:
+            raise forbidden()
+        if dr.created_by != p.user_id:
+            # Otherwise only administrators of a still-active project may read it.
+            project_access(s, p, dr.project_id, "project.manage")
+        return deletion.tombstone_view(dr)
 
     # ------------------------------------------------------------ audit
     @app.get("/projects/{pid}/audit")
