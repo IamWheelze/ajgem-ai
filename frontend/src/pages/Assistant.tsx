@@ -196,6 +196,7 @@ function NarrativeView({ a, onCite }: { a: NarrativeAnswer; onCite: (t: string, 
         {a.status === "answered" && <span className="badge ok">{a.statements.length} cited statement{a.statements.length === 1 ? "" : "s"} · {order.length} source{order.length === 1 ? "" : "s"}</span>}
         {a.provider && <span className="faint">{a.provider.model} via {a.provider.name}{a.provider.served_by_fallback ? " (fallback model)" : ""} · {a.provider.adapter}</span>}
       </div>
+      {a.deletion_notice && <div className="notice bad"><div><strong>Evidence deleted</strong>{a.deletion_notice.message}</div></div>}
       {a.status === "insufficient_evidence" && <div className="notice warn"><div><strong>Insufficient evidence</strong>{a.message}</div></div>}
       {a.status === "declined" && <div className="notice warn"><div><strong>Declined</strong>{a.message}</div></div>}
       {a.statements.length > 0 && (
@@ -282,6 +283,7 @@ function ThresholdView({ r, onCite }: { r: ToolResult; onCite: (t: string, ids: 
   const rows = r.rows.filter((x) => show === "ALL" || x.outcome === show);
   return (
     <>
+      {r.deletion_notice && <div className="notice bad"><div><strong>Evidence deleted</strong>{r.deletion_notice.message}</div></div>}
       <div className="card">
         <div className="card-head">
           <div className="section-label"><span className="bar" style={{ background: "var(--accent)" }} /><h2>Calculated result: {q.analyte} {q.op} {q.threshold} {q.unit}{q.basis ? ` (${q.basis})` : ""}</h2></div>

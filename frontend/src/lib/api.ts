@@ -69,7 +69,7 @@ export const api = {
   get: <T>(p: string, query?: Record<string, unknown>) => request<T>(p, { query }),
   post: <T>(p: string, body?: unknown, headers?: HeadersInit) => request<T>(p, { method: "POST", body: body ?? {}, headers }),
   put: <T>(p: string, body?: unknown) => request<T>(p, { method: "PUT", body }),
-  del: <T>(p: string) => request<T>(p, { method: "DELETE" }),
+  del: <T>(p: string, body?: unknown) => request<T>(p, { method: "DELETE", body }),
 };
 
 /* ------------------------------------------------------------------ types */
@@ -207,6 +207,7 @@ export interface ToolResult {
   exclusions?: Exclusion[];
   calculation?: Record<string, unknown>;
   unmapped_matching_samples?: number;
+  deletion_notice?: { message: string; deletion_request_id: string };
   count?: number;
   note?: string;
   answer_id?: string;
@@ -252,6 +253,7 @@ export interface NarrativeAnswer {
   provider: null | { name: string; model: string; adapter: string; request_id: string | null; usage: Record<string, number>; served_by_fallback: boolean; stop_reason: string | null };
   notice: string;
   message: string | null;
+  deletion_notice?: { message: string; deletion_request_id: string };
   citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean };
   search?: SearchResult;
 }

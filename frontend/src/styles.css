@@ -311,3 +311,6 @@ table.data th.num { font-family: inherit; font-size: 12px; }
 .cite { font: 600 11px/1 var(--sans); padding: 2px 6px; border-radius: 9px; border: 1px solid color-mix(in srgb, var(--info) 40%, transparent); background: var(--info-soft); color: var(--info); vertical-align: 2px; margin-left: 2px; }
 .cite:hover { background: var(--info); color: var(--surface); }
 ol.sources { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+
+/* deletion */
+.danger-box { border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--border)); background: var(--bad-soft); border-radius: var(--radius); padding: 12px 14px; }
