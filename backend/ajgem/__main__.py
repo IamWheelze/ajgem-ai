@@ -2,6 +2,8 @@
 
     python -m ajgem serve                       # API on :8000 (/api + web client when frontend/dist is built)
     python -m ajgem create-user ORG EMAIL       # create an organisation (if new) and a user; prints the user id
+    python -m ajgem migrate                     # apply pending migrations (owner role); --stamp REV adopts a DB
+    python -m ajgem db-status                   # show the database revision and the latest available
 """
 
 from __future__ import annotations
@@ -40,9 +42,25 @@ def main(argv: list[str]) -> int:
     from .context import Settings
     from .models import Organisation, User
 
-    if not argv or argv[0] not in {"serve", "create-user"}:
+    if not argv or argv[0] not in {"serve", "create-user", "migrate", "db-status"}:
         print(__doc__)
         return 2
+    if argv[0] in {"migrate", "db-status"}:
+        from . import migrate
+        from .db import make_engine
+
+        settings = Settings()
+        admin = make_engine(settings.database_admin_url or settings.database_url)
+        runtime_role = make_engine(settings.database_url).url.username
+        if argv[0] == "db-status":
+            print(f"database: {migrate.current_revision(admin) or 'none'}  latest: {migrate.head_revision()}")
+        elif len(argv) == 3 and argv[1] == "--stamp":
+            migrate.stamp(admin, argv[2])
+            print(f"stamped {argv[2]}")
+        else:
+            migrate.upgrade(admin, runtime_role)
+            print(f"at {migrate.current_revision(admin)}")
+        return 0
     app = create_app(Settings())
     if argv[0] == "serve":
         import uvicorn
