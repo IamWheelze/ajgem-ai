@@ -92,8 +92,13 @@ def test_auto_migrate_off_requires_a_current_schema(db, tmp_path):
 
 
 def test_stamp_adopts_an_existing_matching_schema(db, tmp_path):
+    from sqlalchemy import text
+
     admin, runtime_url, admin_url = db
-    Base.metadata.create_all(admin)
+    # A database whose tables match revision 0001 but that has no migration history.
+    migrate.upgrade(admin, _role(runtime_url), target="0001")
+    with admin.begin() as c:
+        c.execute(text("DROP TABLE alembic_version"))
     migrate.stamp(admin, "0001")
     app = create_app(_settings(tmp_path, runtime_url, admin_url))  # applies 0002 (RLS) on PostgreSQL
     assert migrate.current_revision(admin) == migrate.head_revision()

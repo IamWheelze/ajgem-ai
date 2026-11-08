@@ -354,6 +354,22 @@ class Export(Base):
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
 
 
+class DeletionRequest(Base):
+    """Tombstone for an executed deletion (FR22). Holds counts and hashes, never the deleted content."""
+
+    __tablename__ = "deletion_requests"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    target_type: Mapped[str] = mapped_column(String(32))  # document_version | project
+    target_id: Mapped[str] = mapped_column(String(36))
+    reason: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="completed")
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = _ts()
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
 class AuditEvent(Base):
     """Append-only. Updates and deletes are refused at the ORM layer (FR21)."""
 

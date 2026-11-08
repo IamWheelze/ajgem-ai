@@ -49,6 +49,8 @@ POLICIES: dict[str, str] = {
     "memberships": ORG,
     "factor_approvals": ORG,
     "audit_events": ORG,
+    # Tombstones stay readable at organisation level after their project is deleted.
+    "deletion_requests": ORG,
     "job_tasks": "job_id IN (SELECT id FROM jobs)",
 }
 PROJECT_SCOPED = [
@@ -71,7 +73,9 @@ $$
 """
 
 
-def statements(runtime_role: str) -> list[str]:
+def statements(runtime_role: str, tables: set[str] | None = None) -> list[str]:
+    """SQL for the function, policies and grants; limited to `tables` when given (migrations pass the tables
+    that exist at that point in the history)."""
     role = _ident(runtime_role)
     out = [
         VISIBLE_PROJECTS_FN,
@@ -79,6 +83,8 @@ def statements(runtime_role: str) -> list[str]:
         f"GRANT EXECUTE ON FUNCTION ajgem_visible_projects() TO {role}",
     ]
     for table, expr in POLICIES.items():
+        if tables is not None and table not in tables:
+            continue
         out += [
             f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
             f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY",
@@ -109,6 +115,32 @@ def verify(admin_engine: Engine) -> list[str]:
             "WHERE relname = ANY(:t) AND relkind = 'r'"), {"t": list(POLICIES)}).all()
     ok = {r.relname for r in rows if r.relrowsecurity and r.relforcerowsecurity}
     return sorted(set(POLICIES) - ok)
+
+
+def runtime_role_for_migration(alembic_context) -> str:
+    """Runtime role for grants inside a migration: set by ajgem.migrate, else the AJGEM_DATABASE_URL user."""
+    role = alembic_context.config.attributes.get("runtime_role")
+    if not role:
+        from sqlalchemy.engine import make_url
+
+        from .context import Settings
+
+        role = make_url(Settings().database_url).username
+    if not role:
+        raise RuntimeError("Cannot determine the runtime role for RLS grants; set AJGEM_DATABASE_URL")
+    return role
+
+
+def apply_in_migration(op, alembic_context) -> None:
+    """Re-install all policies and grants (idempotent). Call from any migration that adds a table."""
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    from sqlalchemy import inspect
+
+    existing = set(inspect(bind).get_table_names())
+    for sql in statements(runtime_role_for_migration(alembic_context), tables=existing):
+        bind.execute(text(sql))
 
 
 class RlsBypassRole(RuntimeError):
