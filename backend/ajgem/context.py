@@ -65,6 +65,8 @@ class Settings:
     job_lease_seconds: int = field(default_factory=lambda: int(os.environ.get("AJGEM_JOB_LEASE_SECONDS", "300")))
     job_max_claims: int = 5
     worker_poll_seconds: float = field(default_factory=lambda: float(os.environ.get("AJGEM_WORKER_POLL_SECONDS", "2")))
+    # Operator metrics (NF08): GET /metrics is disabled unless a bearer token is configured.
+    metrics_token: str | None = field(default_factory=lambda: os.environ.get("AJGEM_METRICS_TOKEN") or None)
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 

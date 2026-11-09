@@ -76,6 +76,21 @@ The server also checks at start-up that row-level security is installed and that
 
 Repeat the drill on the pilot infrastructure with a copy of real pilot data, record the time it took against the 8-hour target, and add a row here.
 
+## Monitoring
+
+Set `AJGEM_METRICS_TOKEN` and scrape `GET /api/metrics` (or `/metrics` when the API is served on its own) with `Authorization: Bearer <token>`. The output is in the Prometheus text format. It holds aggregates only: request counts and latency by route template, API error codes, the review queue, jobs and pages by state, and this month's metered usage. It never includes tenant names, ids, evidence or prompts. `GET /health` reports whether the database and the malware scanner are answering; use it for liveness and readiness probes.
+
+Suggested alerts:
+
+| Alert | Condition |
+|---|---|
+| Tenant-check refusals | `ajgem_api_errors_total{code="AUTH_FORBIDDEN"}` rises sharply. Expected refusals are rare, so a burst means probing or a broken client. |
+| Scanner down | Any increase of `ajgem_api_errors_total{code="SCAN_UNAVAILABLE"}`, or `/health` returns 503 |
+| Stuck jobs | `ajgem_job_pages{state="queued"}` is not falling while workers run |
+| Slow queries | p95 of `ajgem_http_request_duration_seconds` for `/projects/{pid}/questions` above 3 s for structured questions (NF09) |
+| Backup missing | The backup job's own success signal is older than 26 hours (outside this service) |
+| Budget | `ajgem_usage_month_tokens` approaching the organisation budget |
+
 ## Upgrades and rollback
 
 - **Before an upgrade:** take a backup as above.

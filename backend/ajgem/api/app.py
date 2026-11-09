@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import date
 
+import hmac
 import logging
+import time
 import uuid
 from collections.abc import Iterator
 
@@ -15,6 +17,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..context import Context, Settings
+from ..metrics import Registry
+from ..metrics import gauges as metrics_gauges
 from .. import migrate, rls
 from ..auth import OidcSettings, OidcVerifier, bearer_token, resolve_user_id
 from ..db import bind_rls_context, make_engine, make_session_factory
@@ -87,22 +91,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Owner-role sessions bypass RLS: maintenance tools only (seeding, the dev user picker), never request data.
     app.state.admin_engine, app.state.admin_sessions = admin_engine, AdminSessions
 
+    registry = Registry()
+    app.state.metrics = registry
+
     @app.middleware("http")
     async def correlation(request: Request, call_next):
         cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
         request.state.cid = cid
+        t0 = time.perf_counter()
         resp = await call_next(request)
+        route = getattr(request.scope.get("route"), "path", None) or "unmatched"  # template, never raw ids
+        registry.observe_request(request.method, route, resp.status_code, time.perf_counter() - t0)
         resp.headers["X-Correlation-ID"] = cid
         return resp
 
     @app.exception_handler(ApiError)
     async def api_error(request: Request, exc: ApiError):
+        registry.error(exc.code)
         return JSONResponse(exc.body(getattr(request.state, "cid", None)), status_code=exc.status)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
         err = ApiError("INPUT_INVALID", "Request validation failed",
                        details=[{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()])
+        registry.error(err.code)
         return JSONResponse(err.body(getattr(request.state, "cid", None)), status_code=422)
 
     def db() -> Iterator[Session]:
@@ -498,6 +510,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         u, org = s.get(User, p.user_id), s.get(Organisation, p.organisation_id)
         return {"id": u.id, "email": u.email, "name": u.name, "organisation": {"id": org.id, "name": org.name},
                 "mfa": p.mfa, "auth_mode": "oidc" if oidc is not None else "dev"}
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics(authorization: str | None = Header(default=None)):
+        """Operator metrics (Prometheus text). Disabled unless AJGEM_METRICS_TOKEN is set; aggregates only."""
+        token = settings.metrics_token
+        if not token:
+            raise ApiError("NOT_FOUND", "Metrics are disabled", status=404)
+        if not authorization or not hmac.compare_digest(authorization, f"Bearer {token}"):
+            raise ApiError("AUTH_REQUIRED", "Metrics need the operator token")
+        return Response(registry.render(metrics_gauges(AdminSessions)), media_type="text/plain; version=0.0.4")
 
     @app.get("/health")
     def health():
