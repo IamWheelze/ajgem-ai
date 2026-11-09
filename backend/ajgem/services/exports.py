@@ -14,18 +14,27 @@ from sqlalchemy.orm import Session
 
 from ..context import Context
 from ..errors import ApiError
-from ..models import ConflictGroup, DocumentVersion, Export, PageText, Record, SourceAnchor
+from ..models import ConflictGroup, DocumentVersion, Export, PageText, Record, RecordRevision, SourceAnchor
 from ..science.analytes import ANALYTE_REGISTRY_VERSION
 from ..science.csvsafe import escape_cell
 from ..science.units import UNIT_REGISTRY_VERSION
 from . import audit
 from .access import ProjectAccess
-from .records import revision
+from .records import with_revisions
 
 EXPORT_COLUMNS = [
     "sample_id", "campaign", "analyte", "result_raw", "comparator", "value", "unit", "basis", "method",
-    "detection_limit", "certificate_number", "laboratory", "lon", "lat", "coordinate_status", "conflict_status",
+    "detection_limit", "detection_limit_unit", "certificate_number", "laboratory",
+    "lon", "lat", "raw_x", "raw_y", "source_crs", "axis_order", "crs_pipeline", "transform_accuracy_m",
+    "uncertainty_m", "collection_date", "collection_date_iso", "coordinate_status", "conflict_status",
     "record_id", "revision_id", "revision_no", "source_version_id", "source_sha256", "anchor_refs",
+]
+# NF13: every approved sample, with its raw coordinates as reported, the source CRS and axis order the reviewer
+# confirmed, and the normalised WGS 84 position with the transformation pipeline that produced it.
+SAMPLE_COLUMNS = [
+    "sample_id", "campaign", "sample_type", "collection_date", "collection_date_iso", "raw_x", "raw_y", "source_crs",
+    "axis_order", "crs_confirmed", "positioning_method", "uncertainty_m", "lon", "lat", "target_crs", "crs_pipeline",
+    "transform_accuracy_m", "coordinate_status", "record_id", "revision_id", "revision_no", "anchor_refs",
 ]
 
 
@@ -131,61 +140,100 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
         raise ApiError("INPUT_INVALID", f"Unknown filters: {sorted(set(filters) - allowed)}")
     exact_coords = access.membership.can_export_exact_coordinates or bool(access.roles & {"admin", "analyst", "reviewer"})
     pid = access.project.id
-    samples = {}
-    for s in db.scalars(select(Record).where(Record.project_id == pid, Record.kind == "sample",
-                                             Record.approved_revision_no.is_not(None))):
-        samples.setdefault(s.sample_key, revision(db, s, s.approved_revision_no))
+    sample_pairs = with_revisions(db, pid, "sample")
+    samples: dict[str, RecordRevision] = {}
+    for srec, srev in sample_pairs:
+        samples.setdefault(srec.sample_key, srev)
     conflicts = {}
     for g in db.scalars(select(ConflictGroup).where(ConflictGroup.project_id == pid)):
         for rid in g.member_record_ids or []:
             conflicts[rid] = ("governing" if g.governing_record_id == rid
                               else "excluded_alternative" if g.governing_record_id else f"unresolved_{g.status}")
-    versions: dict[str, DocumentVersion] = {}
+    assay_pairs = [(r, rev) for r, rev in with_revisions(db, pid, "assay")
+                   if not filters.get("analyte") or rev.data.get("analyte") == filters["analyte"]]
+    anchor_ids = sorted({a for _, rev in assay_pairs + sample_pairs for a in (rev.anchor_ids or [])})
+    anchors: dict[str, SourceAnchor] = {}
+    for k in range(0, len(anchor_ids), 1000):
+        anchors.update({a.id: a for a in db.scalars(select(SourceAnchor).where(SourceAnchor.id.in_(anchor_ids[k:k + 1000])))})
+    version_ids = sorted({r.source_version_id for r, _ in assay_pairs if r.source_version_id})
+    versions: dict[str, DocumentVersion] = {v.id: v for v in db.scalars(
+        select(DocumentVersion).where(DocumentVersion.id.in_(version_ids)))} if version_ids else {}
+
+    def coords(srev: RecordRevision | None) -> dict:
+        """Raw and normalised coordinates of a sample; all withheld together when exact coordinates are not granted."""
+        sd = (srev.data if srev is not None else None) or {}
+        mapped = srev is not None and srev.lon is not None and srev.lat is not None
+        t = (srev.transform if srev is not None else None) or {}
+        show = exact_coords
+        return {
+            "lon": str(srev.lon) if mapped and show else None, "lat": str(srev.lat) if mapped and show else None,
+            "raw_x": sd.get("raw_x") if show else None, "raw_y": sd.get("raw_y") if show else None,
+            "source_crs": sd.get("source_crs"), "axis_order": sd.get("axis_order"),
+            "crs_pipeline": t.get("pipeline") if mapped else None,
+            "transform_accuracy_m": t.get("accuracy_m") if mapped else None,
+            "uncertainty_m": sd.get("uncertainty_m"),
+            "collection_date": sd.get("collection_date"), "collection_date_iso": sd.get("collection_date_iso"),
+            "coordinate_status": ("mapped" if mapped and show else "withheld" if (mapped or sd.get("raw_x")) and not show
+                                  else "unmapped"),
+        }
+
+    def refs(rev: RecordRevision) -> str:
+        return ";".join(_anchor_ref(anchors[a]) for a in (rev.anchor_ids or []) if a in anchors)
+
     rows = []
-    for r in db.scalars(select(Record).where(Record.project_id == pid, Record.kind == "assay",
-                                             Record.approved_revision_no.is_not(None)).order_by(Record.sample_key)):
-        rev = revision(db, r, r.approved_revision_no)
+    for r, rev in assay_pairs:
         d = rev.data
-        if filters.get("analyte") and d.get("analyte") != filters["analyte"]:
-            continue
-        srev = samples.get(r.sample_key)
-        mapped = srev is not None and srev.lon is not None
-        if r.source_version_id and r.source_version_id not in versions:
-            versions[r.source_version_id] = db.get(DocumentVersion, r.source_version_id)
         sv = versions.get(r.source_version_id)
-        anchors = [db.get(SourceAnchor, a) for a in rev.anchor_ids]
         rows.append({
             "sample_id": d.get("sample_id"), "campaign": d.get("campaign"), "analyte": d.get("analyte"),
             "result_raw": d.get("result_raw"), "comparator": d.get("comparator"), "value": d.get("value"),
             "unit": d.get("unit"), "basis": d.get("basis"), "method": d.get("method"),
-            "detection_limit": d.get("detection_limit"), "certificate_number": d.get("certificate_number"),
-            "laboratory": d.get("laboratory"),
-            "lon": (str(srev.lon) if mapped and exact_coords else None),
-            "lat": (str(srev.lat) if mapped and exact_coords else None),
-            "coordinate_status": ("mapped" if mapped and exact_coords else "withheld" if mapped else "unmapped"),
+            "detection_limit": d.get("detection_limit"), "detection_limit_unit": d.get("detection_limit_unit"),
+            "certificate_number": d.get("certificate_number"), "laboratory": d.get("laboratory"),
+            **coords(samples.get(r.sample_key)),
             "conflict_status": conflicts.get(r.id, "none"),
             "record_id": r.id, "revision_id": rev.id, "revision_no": rev.revision_no,
             "source_version_id": r.source_version_id, "source_sha256": sv.sha256 if sv else None,
-            "anchor_refs": ";".join(_anchor_ref(a) for a in anchors if a),
+            "anchor_refs": refs(rev),
+        })
+    sample_rows = []
+    for srec, srev in sample_pairs:
+        sd = srev.data or {}
+        c = coords(srev)
+        sample_rows.append({
+            **{k: sd.get(k) for k in ("sample_id", "campaign", "sample_type", "crs_confirmed", "positioning_method")},
+            **{k: c[k] for k in ("collection_date", "collection_date_iso", "raw_x", "raw_y", "source_crs", "axis_order",
+                                 "uncertainty_m", "lon", "lat", "crs_pipeline", "transform_accuracy_m",
+                                 "coordinate_status")},
+            "target_crs": (srev.transform or {}).get("target_crs") if c["lon"] is not None else None,
+            "record_id": srec.id, "revision_id": srev.id, "revision_no": srev.revision_no, "anchor_refs": refs(srev),
         })
     open_conflicts = db.scalar(select(func.count()).select_from(ConflictGroup)
                                .where(ConflictGroup.project_id == pid, ConflictGroup.status == "open"))
     pending = db.scalar(select(func.count()).select_from(Record)
                         .where(Record.project_id == pid, Record.status == "needs_review"))
     stale = db.scalar(select(func.count()).select_from(Record).where(Record.project_id == pid, Record.stale.is_(True)))
-    if fmt == "csv":
+    def as_csv(items: list[dict], columns: list[str]) -> bytes:
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(EXPORT_COLUMNS)
-        for row in rows:
-            w.writerow([escape_cell(row[c]) for c in EXPORT_COLUMNS])
-        data_name, data = "data.csv", buf.getvalue().encode()
-    else:
+        w.writerow(columns)
+        for row in items:
+            w.writerow([escape_cell(row[c]) for c in columns])
+        return buf.getvalue().encode()
+
+    def as_geojson(items: list[dict], columns: list[str]) -> bytes:
         feats = [{"type": "Feature",
                   "geometry": ({"type": "Point", "coordinates": [float(row["lon"]), float(row["lat"])]}
                                if row["lon"] is not None else None),
-                  "properties": {k: row[k] for k in EXPORT_COLUMNS if k not in {"lon", "lat"}}} for row in rows]
-        data_name, data = "data.geojson", json.dumps({"type": "FeatureCollection", "features": feats}, indent=1).encode()
+                  "properties": {k: row[k] for k in columns if k not in {"lon", "lat"}}} for row in items]
+        return json.dumps({"type": "FeatureCollection", "features": feats}, indent=1, default=str).encode()
+
+    if fmt == "csv":
+        data_name, data = "data.csv", as_csv(rows, EXPORT_COLUMNS)
+        samples_name, samples_data = "samples.csv", as_csv(sample_rows, SAMPLE_COLUMNS)
+    else:
+        data_name, data = "data.geojson", as_geojson(rows, EXPORT_COLUMNS)
+        samples_name, samples_data = "samples.geojson", as_geojson(sample_rows, SAMPLE_COLUMNS)
     now = datetime.now(timezone.utc)
     manifest = {
         "export_format": fmt, "created_at": now.isoformat(), "created_by": access.principal.user_id,
@@ -195,16 +243,26 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
         "coordinates_withheld": not exact_coords,
         "unresolved": {"open_conflicts": open_conflicts, "records_needing_review": pending, "stale_records": stale},
         "units": "values exported in their reported units; comparator column carries LT/GT qualifiers",
-        "crs": "lon/lat are WGS 84 (EPSG:4326); see per-record transformation pipelines in the application",
+        "raw_and_normalised": "result_raw is the result as reported; comparator and value are its normalised form. "
+                              "raw_x/raw_y are coordinates as reported in source_crs with the confirmed axis_order; "
+                              "lon/lat are their normalised WGS 84 position.",
+        "crs": {"normalised": "EPSG:4326 (WGS 84 longitude/latitude)",
+                "source": "per record: source_crs and axis_order as confirmed by a reviewer",
+                "transformation": "per record: crs_pipeline (PROJ) and transform_accuracy_m",
+                "unmapped": "rows without a confirmed source CRS keep raw coordinates and have no lon/lat; nothing is guessed"},
+        "sample_count": len(sample_rows),
         "registries": {"units": UNIT_REGISTRY_VERSION, "analytes": ANALYTE_REGISTRY_VERSION},
         "sources": [{"version_id": v.id, "filename": v.filename, "sha256": v.sha256, "status": v.status,
                      "rights_statement": v.rights_statement} for v in versions.values() if v],
         "attribution": "Source documents remain subject to their original rights; no portability beyond those rights is implied.",
         "data_file": data_name, "data_sha256": hashlib.sha256(data).hexdigest(),
+        "samples_file": samples_name, "samples_sha256": hashlib.sha256(samples_data).hexdigest(),
+        "columns": {data_name: EXPORT_COLUMNS, samples_name: SAMPLE_COLUMNS},
     }
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(data_name, data)
+        z.writestr(samples_name, samples_data)
         z.writestr("manifest.json", json.dumps(manifest, indent=1, default=str))
     exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
                  filters=filters, manifest=manifest, payload=zbuf.getvalue(), created_by=access.principal.user_id)
