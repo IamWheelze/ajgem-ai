@@ -54,6 +54,19 @@ jobs:
           CREATE ROLE ajgem_app LOGIN PASSWORD 'app_dev_pw' NOBYPASSRLS;
           CREATE DATABASE ajgem_test OWNER ajgem_owner;
           SQL
+      - name: Start a ClamAV daemon with a local EICAR signature (no signature download)
+        if: matrix.db == 'sqlite'
+        run: |
+          sudo apt-get install -y -q clamav-daemon
+          sudo systemctl stop clamav-daemon clamav-freshclam || true
+          mkdir -p /tmp/clam/db
+          # MD5 and length of the standard 68-byte EICAR test file.
+          echo '44d88612fea8a8f36de82e1278abb02f:68:Local.Test.EICAR' > /tmp/clam/db/local.hdb
+          printf 'DatabaseDirectory /tmp/clam/db\nTCPSocket 3310\nTCPAddr 127.0.0.1\nForeground yes\nStreamMaxLength 110M\n' > /tmp/clam/clamd.conf
+          sudo chown -R clamav /tmp/clam
+          sudo -u clamav clamd -c /tmp/clam/clamd.conf > /tmp/clam/out.log 2>&1 &
+          for i in $(seq 1 30); do (echo -n zPING; printf '\0') | nc -q1 127.0.0.1 3310 2>/dev/null | grep -q PONG && break; sleep 1; done
+          echo "AJGEM_TEST_CLAMD=tcp://127.0.0.1:3310" >> "$GITHUB_ENV"
       - run: python -m pytest -rs
 
   frontend:

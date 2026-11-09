@@ -132,6 +132,16 @@ export AJGEM_AUTH_MODE=oidc AJGEM_OIDC_ISSUER=https://login.example.com/your-ten
 - **Session length:** sessions last at most `AJGEM_OIDC_MAX_SESSION_HOURS` (default 12).
 - **Local testing:** `python scripts/mock_oidc.py` runs a development-only identity provider on port 9000 (anyone can sign in as anyone). Start the API with `AJGEM_OIDC_ISSUER=http://127.0.0.1:9000 AJGEM_OIDC_CLIENT_ID=ajgem-web`.
 
+### Malware scanning
+
+Every upload is scanned before it is stored as a version. The default scanner only recognises the EICAR test file and is for development. For real data, run a ClamAV daemon and set:
+
+```bash
+export AJGEM_SCANNER=clamd AJGEM_CLAMD_ADDRESS=tcp://127.0.0.1:3310
+```
+
+`unix:///run/clamav/clamd.ctl` also works. Files are streamed to the daemon with `INSTREAM`. Set clamd's `StreamMaxLength` at least as large as the 100 MB upload limit, otherwise large files are refused. Scanning fails closed: if the daemon cannot be reached or cannot give a verdict, the upload is refused with `SCAN_UNAVAILABLE` (503). The uploaded chunks are kept, so completing the upload again retries the scan. Infected files are quarantined. `GET /health` reports whether the database and the scanner are answering.
+
 ### Database migrations
 
 The schema is managed by Alembic (`backend/migrations/`). On start-up the app upgrades the database to the latest revision automatically, running as the owner role. Revision `0002` installs the row-level security policies.

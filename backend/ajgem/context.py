@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .services.llm import provider_from_settings
-from .services.storage import LocalObjectStore, SignatureScanner, UrlSigner
+from .services.storage import ClamdScanner, LocalObjectStore, SignatureScanner, UrlSigner, scanner_from_settings
 
 
 @dataclass
@@ -51,6 +51,10 @@ class Settings:
     oidc_mfa_amr: str = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_MFA_AMR", "mfa,otp,hwk,fido,sc"))
     oidc_mfa_acr: str = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_MFA_ACR", ""))
     oidc_max_session_hours: float = field(default_factory=lambda: float(os.environ.get("AJGEM_OIDC_MAX_SESSION_HOURS", "12")))
+    # Malware scanning (FR03): "signature" (EICAR only, development) or "clamd" (ClamAV daemon; fails closed).
+    scanner: str = field(default_factory=lambda: os.environ.get("AJGEM_SCANNER", "signature"))
+    clamd_address: str | None = field(default_factory=lambda: os.environ.get("AJGEM_CLAMD_ADDRESS") or None)
+    scan_timeout_seconds: float = field(default_factory=lambda: float(os.environ.get("AJGEM_SCAN_TIMEOUT", "120")))
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 
@@ -59,7 +63,7 @@ class Settings:
 class Context:
     settings: Settings
     store: LocalObjectStore
-    scanner: SignatureScanner
+    scanner: SignatureScanner | ClamdScanner
     signer: UrlSigner
     answer_provider: object | None = None
 
@@ -68,7 +72,7 @@ class Context:
         return cls(
             settings=settings,
             store=LocalObjectStore(settings.data_dir),
-            scanner=SignatureScanner(),
+            scanner=scanner_from_settings(settings),
             signer=UrlSigner(settings.url_secret),
             answer_provider=provider_from_settings(settings),
         )

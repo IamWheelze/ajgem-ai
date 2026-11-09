@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import logging
 import uuid
 from collections.abc import Iterator
 
@@ -41,6 +42,8 @@ from ..services import deletion, processing, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
+log = logging.getLogger(__name__)
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
@@ -77,6 +80,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     elif settings.auth_mode != "dev":
         raise RuntimeError(f"Unknown AJGEM_AUTH_MODE {settings.auth_mode!r} (dev | oidc)")
     ctx = Context.from_settings(settings)
+    if oidc is not None and ctx.scanner.name == "signature_only":
+        log.warning("AJGEM_SCANNER=signature only detects the EICAR test file; set AJGEM_SCANNER=clamd before real data")
     app = FastAPI(title="AJGEM Exploration Evidence API", version="0.1.0")
     app.state.ctx, app.state.engine, app.state.sessions = ctx, engine, SessionLocal
     # Owner-role sessions bypass RLS: maintenance tools only (seeding, the dev user picker), never request data.
@@ -482,6 +487,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         u, org = s.get(User, p.user_id), s.get(Organisation, p.organisation_id)
         return {"id": u.id, "email": u.email, "name": u.name, "organisation": {"id": org.id, "name": org.name},
                 "mfa": p.mfa, "auth_mode": "oidc" if oidc is not None else "dev"}
+
+    @app.get("/health")
+    def health():
+        """Public readiness check: database reachable and the malware scanner answering. No tenant data."""
+        out = {"database": "ok", "scanner": {"name": ctx.scanner.name, "status": "ok"}}
+        try:
+            with engine.connect() as c:
+                c.execute(select(1))
+        except Exception:
+            out["database"] = "unavailable"
+        if hasattr(ctx.scanner, "version"):
+            try:
+                ctx.scanner.version()
+            except Exception:
+                out["scanner"]["status"] = "unavailable"
+        elif ctx.scanner.name == "signature_only":
+            out["scanner"]["status"] = "development_only"
+        ok = out["database"] == "ok" and out["scanner"]["status"] != "unavailable"
+        return JSONResponse({"status": "ok" if ok else "degraded", **out}, status_code=200 if ok else 503)
 
     @app.get("/auth/config")
     def auth_config():

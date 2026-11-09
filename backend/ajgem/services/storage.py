@@ -1,9 +1,13 @@
 """Object storage and malware-scanner abstractions.
 
 ``LocalObjectStore`` writes content-addressed, write-once files under a private
-directory and stands in for S3-compatible storage. ``SignatureScanner`` only
-detects the EICAR test signature; production must plug in a real scanner
-(e.g. ClamAV) — until then versions are marked ``scan_status='signature_only'``.
+directory and stands in for S3-compatible storage.
+
+Scanners return ``(clean, detail)``; ``detail`` is stored as the version's ``scan_status``.
+``ClamdScanner`` streams the bytes to a ClamAV daemon (INSTREAM) and fails closed: if the
+daemon cannot be reached or reports an error, ``ScannerUnavailable`` is raised and the
+upload is not accepted. ``SignatureScanner`` only detects the EICAR test signature and is for
+development; versions it passes are marked ``scan_status='signature_only'``.
 """
 
 from __future__ import annotations
@@ -11,7 +15,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import socket
+import struct
 import time
+from urllib.parse import urlparse
 from pathlib import Path
 
 
@@ -83,6 +90,83 @@ class SignatureScanner:
         if self._EICAR in data:
             return False, "EICAR test signature"
         return True, self.name
+
+
+class ScannerUnavailable(Exception):
+    """The malware scanner could not give a verdict; the upload must not be accepted."""
+
+
+class ClamdScanner:
+    """ClamAV daemon over TCP (``tcp://host:3310``) or a Unix socket (``unix:///run/clamav/clamd.ctl``)."""
+
+    name = "clamav"
+    CHUNK = 64 * 1024
+
+    def __init__(self, address: str, timeout_seconds: float = 120.0):
+        u = urlparse(address)
+        if u.scheme == "tcp" and u.hostname:
+            self.family, self.target = socket.AF_INET, (u.hostname, u.port or 3310)
+        elif u.scheme == "unix" and u.path:
+            self.family, self.target = socket.AF_UNIX, u.path
+        else:
+            raise ValueError(f"AJGEM_CLAMD_ADDRESS must be tcp://host:port or unix:///path, not {address!r}")
+        self.address, self.timeout = address, timeout_seconds
+
+    def _connect(self) -> socket.socket:
+        sock = socket.socket(self.family, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        try:
+            sock.connect(self.target)
+        except OSError as e:
+            sock.close()
+            raise ScannerUnavailable(f"ClamAV daemon at {self.address} is unreachable ({e.__class__.__name__})") from None
+        return sock
+
+    @staticmethod
+    def _read_reply(sock: socket.socket) -> str:
+        buf = b""
+        while not buf.endswith(b"\0"):
+            part = sock.recv(4096)
+            if not part:
+                break
+            buf += part
+        return buf.rstrip(b"\0").decode("utf-8", "replace").strip()
+
+    def version(self) -> str:
+        with self._connect() as sock:
+            sock.sendall(b"zVERSION\0")
+            return self._read_reply(sock)
+
+    def scan(self, data: bytes) -> tuple[bool, str]:
+        try:
+            with self._connect() as sock:
+                sock.sendall(b"zINSTREAM\0")
+                for off in range(0, len(data), self.CHUNK):
+                    part = data[off: off + self.CHUNK]
+                    sock.sendall(struct.pack("!L", len(part)) + part)
+                sock.sendall(struct.pack("!L", 0))
+                reply = self._read_reply(sock)
+        except ScannerUnavailable:
+            raise
+        except OSError as e:
+            raise ScannerUnavailable(f"ClamAV scan failed ({e.__class__.__name__}: {e})") from None
+        # Replies: "stream: OK", "stream: <Signature> FOUND", "INSTREAM size limit exceeded. ERROR", "... ERROR".
+        if reply.endswith(" OK") or reply == "stream: OK":
+            return True, self.name
+        if reply.endswith(" FOUND"):
+            sig = reply.removeprefix("stream:").removesuffix("FOUND").strip()
+            return False, f"ClamAV: {sig}"
+        raise ScannerUnavailable(f"ClamAV could not scan the file: {reply or 'no reply'}")
+
+
+def scanner_from_settings(settings):
+    if settings.scanner == "clamd":
+        if not settings.clamd_address:
+            raise ValueError("AJGEM_SCANNER=clamd needs AJGEM_CLAMD_ADDRESS (tcp://host:port or unix:///path)")
+        return ClamdScanner(settings.clamd_address, settings.scan_timeout_seconds)
+    if settings.scanner == "signature":
+        return SignatureScanner()
+    raise ValueError(f"Unknown AJGEM_SCANNER {settings.scanner!r} (use 'clamd' or 'signature')")
 
 
 class UrlSigner:
