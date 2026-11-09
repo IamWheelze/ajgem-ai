@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import re
 import time
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pypdf
@@ -20,7 +21,7 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import DocumentVersion, Job, JobTask, PageText, SourceAnchor
 from . import audit
-from . import ocr
+from . import ocr, sandbox
 from .access import ProjectAccess
 from .answers import provider_permitted
 from .llm import EXTRACTION_ADAPTER_VERSION, InvalidModelOutput, ProviderError, ProviderUnavailable
@@ -54,8 +55,11 @@ def start_pdf_job(db: Session, ctx: Context, access: ProjectAccess, version_id: 
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if v.detected_format != "pdf":
         raise ApiError("INPUT_UNSUPPORTED", "Use the structured import preview for tabular files")
-    data = ctx.store.get(v.storage_key)
-    n = len(pypdf.PdfReader(io.BytesIO(data)).pages)
+    info, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, inspect_pdf, ctx.store.source(v.storage_key),
+                                    limits=sandbox_limits(ctx.settings))
+    if "error" in info or info.get("encrypted"):
+        raise ApiError("INPUT_UNSUPPORTED", f"PDF cannot be read: {info.get('error', 'encrypted')}")
+    n = info["pages"]
     job = Job(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id, kind="pdf_extract",
               state="queued", created_by=access.principal.user_id, cost_counters={"pages": n, "ocr_pages": 0})
     db.add(job)
@@ -76,7 +80,7 @@ def run_job(db: Session, ctx: Context, access: ProjectAccess, job_id: str, only_
     job.state = "processing"
     job.attempt += 1
     v = db.get(DocumentVersion, job.version_id)
-    data = ctx.store.get(v.storage_key)
+    data = ctx.store.source(v.storage_key)
     for task in job.tasks:
         if task.state in {"succeeded", "flagged"}:
             continue  # idempotent: successful units are never re-run
@@ -175,24 +179,47 @@ def _cost(db: Session, task: JobTask, key: str) -> None:
     job.cost_counters = {**(job.cost_counters or {}), key: (job.cost_counters or {}).get(key, 0) + 1}
 
 
-def _page_content(db: Session, ctx: Context, data: bytes, page_index: int, task: JobTask):
-    """Return (text, lines, quality, page_issues) using the text layer, or OCR for scanned pages."""
+def _read(source) -> bytes:
+    return source if isinstance(source, (bytes, bytearray)) else Path(source).read_bytes()
+
+
+def inspect_pdf(source) -> dict:
+    """Runs in the parser sandbox: page count and encryption, or the reason the PDF cannot be read."""
+    from pypdf.errors import PdfReadError
+
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(_read(source)))
+        if reader.is_encrypted:
+            return {"encrypted": True, "pages": None}
+        return {"encrypted": False, "pages": len(reader.pages)}
+    except (PdfReadError, ValueError, KeyError, TypeError) as e:
+        return {"error": f"{e.__class__.__name__}: {e}"}
+
+
+def parse_page(source, page_index: int, ocr_timeout: int) -> dict:
+    """Runs in the parser sandbox: text (text layer, else OCR), lines with word boxes, quality and page issues.
+
+    Pure: no database, no storage credentials. Raises TransientTaskError for retryable OCR timeouts.
+    """
+    data = _read(source)
+    label = page_label(data, page_index)
     text = extract_page_text(data, page_index)
     size = ocr.page_size(data, page_index)
+    out = {"label": label}
     if len(text.strip()) >= ocr.MIN_TEXT_LAYER_CHARS:
-        return text, ocr.text_layer_lines(text), TEXT_METHOD, {"method": "text_layer", "page_size": size}, []
+        return {**out, "text": text, "lines": ocr.text_layer_lines(text), "method": TEXT_METHOD,
+                "quality": {"method": "text_layer", "page_size": size}, "issues": []}
     try:
-        page = ocr.ocr_page(data, page_index, timeout=ctx.settings.ocr_timeout_seconds)
+        page = ocr.ocr_page(data, page_index, timeout=ocr_timeout)
     except ocr.OcrUnavailable:
-        return None, [], TEXT_METHOD, {"method": "none", "page_size": size}, [issue(
-            "OCR_REQUIRED", "warning", None,
-            "No text layer on this page and the OCR engine is not installed — page needs OCR or manual entry")]
+        return {**out, "text": None, "lines": [], "method": TEXT_METHOD, "quality": {"method": "none", "page_size": size},
+                "issues": [issue("OCR_REQUIRED", "warning", None,
+                                 "No text layer on this page and the OCR engine is not installed — page needs OCR or manual entry")]}
     except ocr.OcrFailed as e:
         if "exceeded" in str(e):
             raise TransientTaskError(str(e)) from None
-        return None, [], TEXT_METHOD, {"method": "none", "page_size": size}, [issue(
-            "OCR_FAILED", "warning", None, f"OCR failed on this page ({e}); manual entry required")]
-    _cost(db, task, "ocr_pages")
+        return {**out, "text": None, "lines": [], "method": TEXT_METHOD, "quality": {"method": "none", "page_size": size},
+                "issues": [issue("OCR_FAILED", "warning", None, f"OCR failed on this page ({e}); manual entry required")]}
     q = dict(page.quality(), page_size=size)
     page_issues = []
     if "NO_TEXT_DETECTED" in page.flags:
@@ -205,13 +232,33 @@ def _page_content(db: Session, ctx: Context, data: bytes, page_index: int, task:
         page_issues.append(issue("OCR_PAGE_ROTATED", "info", None, f"Page image was rotated {page.rotation}° before OCR"))
     if "ROTATION_UNCERTAIN" in page.flags:
         page_issues.append(issue("OCR_ROTATION_UNCERTAIN", "warning", None, "Page orientation detection was uncertain"))
-    return page.text, page.lines, page.engine, q, page_issues
+    return {**out, "text": page.text, "lines": page.lines, "method": page.engine, "quality": q, "issues": page_issues}
 
 
-def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersion, data: bytes, task: JobTask) -> None:
+def sandbox_limits(settings) -> sandbox.Limits:
+    return sandbox.Limits(cpu_seconds=settings.parser_cpu_seconds, memory_bytes=settings.parser_memory_mb * 2**20,
+                          wall_seconds=float(settings.parser_cpu_seconds * 2))
+
+
+def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersion, data, task: JobTask) -> None:
+    """``data`` is the PDF's bytes or a local path to them; parsing itself happens in the sandbox."""
     page_index = int(task.unit_key.split(":")[1])
-    text, lines, method, quality, page_issues = _page_content(db, ctx, data, page_index, task)
-    label = page_label(data, page_index)
+    try:
+        parsed, isolated = sandbox.run_or_inline(ctx.settings.parser_sandbox, parse_page, data, page_index,
+                                                 ctx.settings.ocr_timeout_seconds, limits=sandbox_limits(ctx.settings))
+    except sandbox.ParserLimitExceeded as e:
+        # Deterministic for this page: retrying would hit the same limit, so the page goes to manual entry.
+        task.state, task.issues = "flagged", [issue(e.code, "warning", None, f"{e}; this page needs manual entry")]
+        return
+    except sandbox.SandboxError as e:
+        task.state, task.issues = "flagged", [issue("PARSER_CRASHED", "warning", None, f"{e}; this page needs manual entry")]
+        return
+    text, lines, method, page_issues, label = (parsed["text"], parsed["lines"], parsed["method"], parsed["issues"],
+                                               parsed["label"])
+    quality = {**parsed["quality"], "sandbox": {"version": sandbox.SANDBOX_VERSION, "enabled": ctx.settings.parser_sandbox,
+                                                "network_isolated": isolated}}
+    if quality.get("method") == "ocr":
+        _cost(db, task, "ocr_pages")
     pt = db.scalar(select(PageText).where(PageText.version_id == v.id, PageText.page_index == page_index))
     if pt is None:
         db.add(PageText(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id,

@@ -181,7 +181,7 @@ def test_macro_workbook_rejected(team):
     assert r.json()["error"]["code"] == "INPUT_UNSUPPORTED" and "Macro" in r.json()["error"]["message"]
 
 
-def test_failed_page_retry_without_duplicate_candidates(team, monkeypatch):
+def test_failed_page_retry_without_duplicate_candidates(team, monkeypatch, inline_parsers):
     pages = [["Certificate No: C-9", f"S-{i}01 Li {100 + i} ppm", f"S-{i}02 Li {200 + i} ppm"] for i in range(3)]
     real = processing.extract_page_text
     state = {"fail": True}

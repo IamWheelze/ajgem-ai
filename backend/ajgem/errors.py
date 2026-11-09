@@ -43,6 +43,9 @@ class ApiError(Exception):
         self.details = details
         self.status = status or STATUS.get(code, 400)
 
+    def __reduce__(self):  # picklable, so errors raised inside the parser sandbox reach the API unchanged
+        return (self.__class__, (self.code, self.message, self.details, self.status))
+
     def body(self, correlation_id: str | None = None) -> dict:
         out = {"error": {"code": self.code, "message": self.message}}
         if self.details is not None:

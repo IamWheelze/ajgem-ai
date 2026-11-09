@@ -14,6 +14,7 @@ import io
 import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -64,7 +65,22 @@ def _xlsx_text(v) -> str | None:
     return str(v)
 
 
-def read_table(data: bytes, fmt: str, mapping: dict, max_rows: int) -> tuple[list[str], list[tuple[int, dict[str, Cell]]], dict]:
+def read_table_isolated(ctx: Context, v: DocumentVersion, mapping: dict):
+    """read_table in the parser sandbox (NF05): spreadsheet parsing has CPU, memory and network limits."""
+    from . import processing, sandbox
+
+    try:
+        out, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, read_table, ctx.store.source(v.storage_key),
+                                       v.detected_format, mapping, ctx.settings.max_table_rows,
+                                       limits=processing.sandbox_limits(ctx.settings))
+    except (sandbox.ParserLimitExceeded, sandbox.SandboxError) as e:
+        raise ApiError("INPUT_UNSUPPORTED", f"The file could not be read within the parser's limits: {e}") from None
+    return out
+
+
+def read_table(data, fmt: str, mapping: dict, max_rows: int) -> tuple[list[str], list[tuple[int, dict[str, Cell]]], dict]:
+    if not isinstance(data, (bytes, bytearray)):
+        data = Path(data).read_bytes()
     header_row = int(mapping.get("header_row", 1))
     meta: dict = {}
     if fmt == "csv":
@@ -150,7 +166,7 @@ def inspect(db: Session, ctx: Context, access: ProjectAccess, version_id: str, s
         m["delimiter"] = delimiter
     if encoding:
         m["encoding"] = encoding
-    header, rows, meta = read_table(ctx.store.get(v.storage_key), v.detected_format, m, ctx.settings.max_table_rows)
+    header, rows, meta = read_table_isolated(ctx, v, m)
     sample = [{"row": n, "cells": {h: (c.raw if c.formula is None else f"{c.raw} ({c.formula})") for h, c in cells.items()}}
               for n, cells in rows[:10]]
     return {"format": v.detected_format, "header": header, "meta": meta, "row_count": len(rows), "sample_rows": sample,
@@ -244,7 +260,7 @@ def preview(db: Session, ctx: Context, access: ProjectAccess, version_id: str, m
     v = db.get(DocumentVersion, version_id)
     if v is None or v.project_id != access.project.id:
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
-    header, rows, meta = read_table(ctx.store.get(v.storage_key), v.detected_format, mapping, ctx.settings.max_table_rows)
+    header, rows, meta = read_table_isolated(ctx, v, mapping)
     _validate_mapping(mapping, header)
     reg = registry_for(db, access.principal.organisation_id)
     cfg = current_config(db, access.project.id)
@@ -294,7 +310,7 @@ def commit(db: Session, ctx: Context, access: ProjectAccess, preview_id: str, pr
     v = db.get(DocumentVersion, p.version_id)
     if preview_hash != p.preview_hash or _hash(v, p.mapping) != p.preview_hash:
         raise ApiError("PREVIEW_STALE", "Preview hash does not match; re-run the preview")
-    _, rows, _ = read_table(ctx.store.get(v.storage_key), v.detected_format, p.mapping, ctx.settings.max_table_rows)
+    _, rows, _ = read_table_isolated(ctx, v, p.mapping)
     created = {"sample": 0, "assay": 0, "certificate": 0}
     reused = 0
     linked_existing = []

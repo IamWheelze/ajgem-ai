@@ -75,6 +75,10 @@ class LocalObjectStore:
     def get(self, key: str) -> bytes:
         return (self.root / key).read_bytes()
 
+    def source(self, key: str) -> str:
+        """What a sandboxed parser reads: a local, read-only path (an object store would hand over a download)."""
+        return str(self.root / key)
+
     def delete(self, key: str) -> None:
         p = self.root / key
         if p.exists():

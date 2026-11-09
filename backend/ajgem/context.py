@@ -55,6 +55,10 @@ class Settings:
     scanner: str = field(default_factory=lambda: os.environ.get("AJGEM_SCANNER", "signature"))
     clamd_address: str | None = field(default_factory=lambda: os.environ.get("AJGEM_CLAMD_ADDRESS") or None)
     scan_timeout_seconds: float = field(default_factory=lambda: float(os.environ.get("AJGEM_SCAN_TIMEOUT", "120")))
+    # Parser sandbox for untrusted files (NF05): child process with CPU, memory and network limits.
+    parser_sandbox: bool = field(default_factory=lambda: os.environ.get("AJGEM_PARSER_SANDBOX", "1") == "1")
+    parser_cpu_seconds: int = field(default_factory=lambda: int(os.environ.get("AJGEM_PARSER_CPU_SECONDS", "300")))
+    parser_memory_mb: int = field(default_factory=lambda: int(os.environ.get("AJGEM_PARSER_MEMORY_MB", "2048")))
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 

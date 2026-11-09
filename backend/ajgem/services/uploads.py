@@ -214,15 +214,17 @@ def complete(db: Session, ctx: Context, access: ProjectAccess, session_id: str, 
 
 
 def _check_pdf(ctx: Context, data: bytes) -> None:
-    from pypdf import PdfReader
-    from pypdf.errors import PdfReadError
+    from . import processing, sandbox
 
     try:
-        reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            raise ApiError("INPUT_UNSUPPORTED", "Password-protected PDFs are not accepted")
-        n = len(reader.pages)
-    except PdfReadError as e:
-        raise ApiError("INPUT_UNSUPPORTED", f"Corrupted PDF: {e}") from None
+        info, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, processing.inspect_pdf, data,
+                                        limits=processing.sandbox_limits(ctx.settings))
+    except (sandbox.ParserLimitExceeded, sandbox.SandboxError) as e:
+        raise ApiError("INPUT_UNSUPPORTED", f"PDF could not be inspected safely: {e}") from None
+    if info.get("encrypted"):
+        raise ApiError("INPUT_UNSUPPORTED", "Password-protected PDFs are not accepted")
+    if "error" in info:
+        raise ApiError("INPUT_UNSUPPORTED", f"Corrupted PDF: {info['error']}")
+    n = info["pages"]
     if n > ctx.settings.max_pdf_pages:
         raise ApiError("INPUT_UNSUPPORTED", f"PDF has {n} pages; limit is {ctx.settings.max_pdf_pages}")
