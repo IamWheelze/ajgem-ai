@@ -153,3 +153,49 @@ def test_page_image_link_is_signed_and_scoped(team, client):
     assert team["outsider"].get(url).status_code == 403
     assert client.get(url.replace("/pages/0.png", "/pages/9.png")).status_code == 403
     assert up["format"] == "pdf"
+
+
+def test_an_engine_that_cannot_start_is_not_reported_as_missing(monkeypatch):
+    """Only a missing binary means "not installed"; out of memory is a resource limit, anything else an OCR failure."""
+    import errno
+    import subprocess
+
+    def fails(err):
+        def run(*a, **k):
+            raise err
+        return run
+
+    monkeypatch.setattr(ocr.shutil, "which", lambda name: "/usr/bin/tesseract")
+    try:
+        ocr.tesseract_version.cache_clear()
+        monkeypatch.setattr(ocr.subprocess, "run", fails(FileNotFoundError(errno.ENOENT, "no such file")))
+        assert ocr.tesseract_version() is None
+        ocr.tesseract_version.cache_clear()
+        monkeypatch.setattr(ocr.subprocess, "run", fails(OSError(errno.ENOMEM, "Cannot allocate memory")))
+        with pytest.raises(MemoryError):
+            ocr.tesseract_version()
+        with pytest.raises(MemoryError):
+            ocr._run(["stdin", "stdout"], b"", 5)
+        monkeypatch.setattr(ocr.subprocess, "run", fails(PermissionError(errno.EACCES, "Permission denied")))
+        with pytest.raises(ocr.OcrFailed):
+            ocr._run(["stdin", "stdout"], b"", 5)
+        monkeypatch.setattr(ocr.subprocess, "run", fails(subprocess.TimeoutExpired("tesseract", 15)))
+        ocr.tesseract_version.cache_clear()
+        with pytest.raises(ocr.OcrFailed):
+            ocr.tesseract_version()
+    finally:
+        ocr.tesseract_version.cache_clear()
+
+
+def test_out_of_memory_ocr_flags_the_page_as_a_parser_limit(team, monkeypatch, inline_parsers):
+    import errno
+
+    def no_memory(*a, **k):
+        raise MemoryError(f"could not start Tesseract: {errno.errorcode[errno.ENOMEM]}")
+
+    monkeypatch.setattr(processing.ocr, "ocr_page", no_memory)
+    an, pid = team["analyst"], team["pid"]
+    up = an.upload(pid, make_scanned_pdf([["KW-1 Li 900 ppm"]]), "oom.pdf").json()
+    unit = an.get(f"/jobs/{up['job_id']}").json()["manifest"]["units"][0]
+    assert unit["state"] == "flagged" and unit["attempts"] == 1
+    assert unit["issues"][0]["code"] == "PARSER_MEMORY_LIMIT"

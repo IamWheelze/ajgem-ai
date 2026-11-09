@@ -14,6 +14,7 @@ assay rows are still matched per text line and every OCR candidate needs review.
 from __future__ import annotations
 
 import csv
+import errno
 import io
 import re
 import shutil
@@ -101,15 +102,31 @@ class OcrFailed(RuntimeError):
     pass
 
 
+def _start_failure(e: OSError) -> Exception:
+    """Why Tesseract could not be started. Only a missing binary means "not installed"."""
+    if isinstance(e, FileNotFoundError):
+        return OcrUnavailable("Tesseract is not installed")
+    if e.errno in (errno.ENOMEM, errno.EAGAIN):
+        # Out of memory or processes, e.g. inside the parser sandbox's limits: a resource limit, not a missing engine.
+        return MemoryError(f"could not start Tesseract: {e.strerror}")
+    return OcrFailed(f"could not start Tesseract: {e}")
+
+
 @lru_cache(maxsize=1)
 def tesseract_version() -> str | None:
+    """The engine's version line, or None when it is not installed. Raises if it is installed but cannot start."""
     exe = shutil.which("tesseract")
     if not exe:
         return None
     try:
         out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=15)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except subprocess.TimeoutExpired:
+        raise OcrFailed("Tesseract did not report its version within 15 s") from None
+    except OSError as e:
+        failure = _start_failure(e)
+        if isinstance(failure, OcrUnavailable):
+            return None
+        raise failure from None
     first = (out.stdout or out.stderr).splitlines()
     return first[0].strip() if first else "tesseract"
 
@@ -144,6 +161,8 @@ def _run(args: list[str], stdin: bytes, timeout: int) -> str:
         p = subprocess.run([exe, *args], input=stdin, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise OcrFailed(f"OCR exceeded {timeout}s") from None
+    except OSError as e:
+        raise _start_failure(e) from None
     if p.returncode != 0:
         raise OcrFailed(p.stderr.decode(errors="replace")[:300])
     return p.stdout.decode("utf-8", errors="replace")

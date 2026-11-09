@@ -66,8 +66,13 @@ jobs:
           echo '44d88612fea8a8f36de82e1278abb02f:68:Local.Test.EICAR' > /tmp/clam/db/local.hdb
           printf 'DatabaseDirectory /tmp/clam/db\nTCPSocket 3310\nTCPAddr 127.0.0.1\nForeground yes\nStreamMaxLength 110M\n' > /tmp/clam/clamd.conf
           sudo chown -R clamav /tmp/clam
-          sudo -u clamav clamd -c /tmp/clam/clamd.conf > /tmp/clam/out.log 2>&1 &
-          for i in $(seq 1 30); do (echo -n zPING; printf '\0') | nc -q1 127.0.0.1 3310 2>/dev/null | grep -q PONG && break; sleep 1; done
+          # The log goes where the runner can write it; /tmp/clam now belongs to clamav.
+          sudo -u clamav clamd -c /tmp/clam/clamd.conf > "$RUNNER_TEMP/clamd.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if (printf 'zPING\0') | nc -q1 127.0.0.1 3310 2>/dev/null | grep -q PONG; then echo "clamd ready after ${i}s"; break; fi
+            sleep 1
+          done
+          (printf 'zPING\0') | nc -q1 127.0.0.1 3310 | grep -q PONG || { echo "clamd did not start"; cat "$RUNNER_TEMP/clamd.log"; exit 1; }
           echo "AJGEM_TEST_CLAMD=tcp://127.0.0.1:3310" >> "$GITHUB_ENV"
       - run: python -m pytest -rs
 

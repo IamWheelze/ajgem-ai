@@ -334,6 +334,10 @@ def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersio
         # Deterministic for this page: retrying would hit the same limit, so the page goes to manual entry.
         task.state, task.issues = "flagged", [issue(e.code, "warning", None, f"{e}; this page needs manual entry")]
         return
+    except MemoryError as e:  # in-process parsing (sandbox off) running out of memory
+        task.state, task.issues = "flagged", [issue("PARSER_MEMORY_LIMIT", "warning", None,
+                                                    f"Parser ran out of memory ({e}); this page needs manual entry")]
+        return
     except sandbox.SandboxError as e:
         task.state, task.issues = "flagged", [issue("PARSER_CRASHED", "warning", None, f"{e}; this page needs manual entry")]
         return
