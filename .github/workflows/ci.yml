@@ -124,7 +124,7 @@ jobs:
       - name: Install Playwright
         working-directory: frontend
         run: |
-          npm i --no-save --no-package-lock playwright@1.49.1
+          npm i --no-save --no-package-lock playwright@1.49.1 axe-core@4.10.2
           npx playwright install --with-deps chromium
       - name: Seed synthetic data and start server
         working-directory: backend
@@ -139,6 +139,9 @@ jobs:
       - name: Run targets and checklists walkthrough
         working-directory: frontend
         run: node e2e/targets.cjs
+      - name: Accessibility check (axe-core, WCAG 2.1 AA, light and dark)
+        working-directory: frontend
+        run: node e2e/a11y.cjs
       - name: Restart in OIDC mode with the development mock identity provider
         working-directory: backend
         run: |

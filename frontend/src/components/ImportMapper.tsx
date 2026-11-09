@@ -106,7 +106,7 @@ export function ImportMapper({ versionId, format }: { versionId: string; format:
 
         <details open>
           <summary>First rows (raw values, as stored)</summary>
-          <div className="table-wrap" style={{ maxHeight: 240, marginTop: 8 }}>
+          <div className="table-wrap" tabIndex={0} style={{ maxHeight: 240, marginTop: 8 }}>
             <table className="data">
               <thead><tr><th className="num">Row</th>{h.header.map((c) => <th key={c}>{c}</th>)}</tr></thead>
               <tbody>{h.sample_rows.map((r) => <tr key={r.row}><td className="num">{r.row}</td>{h.header.map((c) => <td key={c} className="mono">{r.cells[c] ?? ""}</td>)}</tr>)}</tbody>
@@ -218,7 +218,7 @@ function PreviewReport({ p }: { p: Preview }) {
         <div className="card tile"><span className="label">Warnings</span><span className="value" style={{ color: c.warning ? "var(--warn)" : undefined }}>{c.warning ?? 0}</span><span className="sub">need reviewer acknowledgement</span></div>
       </div>
       {withIssues.length > 0 && (
-        <div className="table-wrap" style={{ maxHeight: 300 }}>
+        <div className="table-wrap" tabIndex={0} style={{ maxHeight: 300 }}>
           <table className="data">
             <thead><tr><th className="num">Row</th><th>Sample</th><th>Issues</th></tr></thead>
             <tbody>

@@ -93,7 +93,7 @@ export default function Explorer() {
           )}
         </div>
         {recs.loading && !recs.data ? <Loading /> : recs.error ? <ErrorNotice error={recs.error} /> : rows.length === 0 ? <Empty>No records match.</Empty> : (
-          <div className="table-wrap" style={{ maxHeight: "62vh" }}>
+          <div className="table-wrap" tabIndex={0} style={{ maxHeight: "62vh" }}>
             <table className="data">
               <thead>
                 {kind === "assay" ? (

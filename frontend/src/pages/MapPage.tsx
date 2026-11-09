@@ -243,7 +243,7 @@ export default function MapPage() {
           </div>
           <ErrorNotice error={fc.error} />
           {fc.loading && !fc.data ? <Loading /> : visible.length === 0 ? <Empty>No approved, mapped samples{area ? " in this area" : ""}.</Empty> : (
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0}>
               <table className="data">
                 <thead><tr><th>Sample</th><th>Results</th><th className="num">± m</th></tr></thead>
                 <tbody>

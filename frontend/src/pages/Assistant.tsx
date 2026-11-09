@@ -319,7 +319,7 @@ function ThresholdView({ r, onCite }: { r: ToolResult; onCite: (t: string, ids: 
           {(r.unmapped_matching_samples ?? 0) > 0 && <div className="faint">{r.unmapped_matching_samples} matching sample(s) have no approved location and are not on the map.</div>}
         </div>
         {rows.length === 0 ? <Empty>No rows in this category.</Empty> : (
-          <div className="table-wrap" style={{ maxHeight: 440 }}>
+          <div className="table-wrap" tabIndex={0} style={{ maxHeight: 440 }}>
             <table className="data">
               <thead><tr><th>Sample</th><th className="num">Reported</th><th className="num">Compared ({q.unit})</th><th>Outcome</th>{r.rows.some((x) => x.equivalent) && <th className="num">Equivalent</th>}<th>Certificate</th><th>Method</th><th>Rev</th><th>Map</th><th>Evidence</th></tr></thead>
               <tbody>
