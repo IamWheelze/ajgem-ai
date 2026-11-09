@@ -69,6 +69,7 @@ backend/
   tests/            FRD acceptance tests, including the §13 first milestone end to end
 docs/FRD.md         requirements baseline (converted from the supplied .docx)
 docs/TRACEABILITY.md
+docs/OPERATIONS.md  backups, restores, verification and rollback
 ```
 
 ## Running
@@ -132,6 +133,48 @@ export AJGEM_AUTH_MODE=oidc AJGEM_OIDC_ISSUER=https://login.example.com/your-ten
 - **Session length:** sessions last at most `AJGEM_OIDC_MAX_SESSION_HOURS` (default 12).
 - **Local testing:** `python scripts/mock_oidc.py` runs a development-only identity provider on port 9000 (anyone can sign in as anyone). Start the API with `AJGEM_OIDC_ISSUER=http://127.0.0.1:9000 AJGEM_OIDC_CLIENT_ID=ajgem-web`.
 
+### HTTPS and browser hardening
+
+Every response carries security headers: `nosniff`, `Referrer-Policy: no-referrer` (view links carry short-lived tokens), same-origin framing, and HSTS over HTTPS. The web client is served with a Content Security Policy that allows scripts from its own origin only, and network calls only to its own origin and the identity provider. If you add a basemap, list its hosts in `AJGEM_CSP_CONNECT_EXTRA` (space-separated origins). Set `AJGEM_REQUIRE_HTTPS=1` in production: plain-HTTP API calls are refused and the web client redirects to HTTPS. Behind a TLS-terminating proxy, the proxy must send `X-Forwarded-Proto`.
+
+### Malware scanning
+
+Every upload is scanned before it is stored as a version. The default scanner only recognises the EICAR test file and is for development. For real data, run a ClamAV daemon and set:
+
+```bash
+export AJGEM_SCANNER=clamd AJGEM_CLAMD_ADDRESS=tcp://127.0.0.1:3310
+```
+
+`unix:///run/clamav/clamd.ctl` also works. Files are streamed to the daemon with `INSTREAM`. Set clamd's `StreamMaxLength` at least as large as the 100 MB upload limit, otherwise large files are refused. Scanning fails closed: if the daemon cannot be reached or cannot give a verdict, the upload is refused with `SCAN_UNAVAILABLE` (503). The uploaded chunks are kept, so completing the upload again retries the scan. Infected files are quarantined. `GET /health` reports whether the database and the scanner are answering.
+
+### Background workers
+
+By default PDF jobs run inside the upload request, which is fine for development. For pilots, queue them instead and run one or more workers:
+
+```bash
+export AJGEM_JOB_EXECUTOR=worker
+```
+
+```bash
+python -m ajgem worker
+```
+
+The worker needs the same environment as the API. A worker leases a job, runs it page by page with each page committed on its own, and acts as the user who started the job, under the same access checks and row-level security. If a worker dies, its lease expires (`AJGEM_JOB_LEASE_SECONDS`, default 300) and another worker continues from the next unfinished page. A job whose pages keep stopping workers is failed after five attempts, so it cannot loop forever. Cancelling takes effect between pages. The web client polls queued and running jobs.
+
+### Usage, quotas and budgets
+
+Every billable step is metered without storing evidence: pages parsed, OCR pages, language-model calls and tokens (extraction and answers kept apart), and export bytes. Storage is measured from stored originals. Administrators see this month's figures under Administration → Usage and budget, and can set project quotas there (pages and model tokens per month). These quotas are versioned like the rest of the project configuration. The operator sets an organisation-wide budget:
+
+```bash
+python -m ajgem set-budget "Kano Exploration" --pages 5000 --model-tokens 2000000
+```
+
+Use `none` to clear a limit. A PDF job whose page estimate would exceed either limit does not start. It waits on the Jobs page until a project administrator approves it with a reason, which is audited. When model tokens run out, answers fall back to search results and unread tables go to manual review (`MODEL_BUDGET_EXHAUSTED`).
+
+### Parser sandbox
+
+PDF inspection, page rendering, OCR and spreadsheet reading run in a child process with a CPU limit (`AJGEM_PARSER_CPU_SECONDS`, default 300), a memory limit (`AJGEM_PARSER_MEMORY_MB`, default 2048) and a wall-clock deadline. The child also has no network: it moves into new user and network namespaces. Some hosts disable unprivileged user namespaces. Ubuntu 24.04, for example, needs `sysctl kernel.apparmor_restrict_unprivileged_userns=0`; on such hosts, run the service in a container without network access instead. Each page's quality record shows whether isolation was in effect (`sandbox.network_isolated`). A page that hits a limit is flagged for manual entry and is not retried. `AJGEM_PARSER_SANDBOX=0` runs parsers in-process, for debugging only.
+
 ### Database migrations
 
 The schema is managed by Alembic (`backend/migrations/`). On start-up the app upgrades the database to the latest revision automatically, running as the owner role. Revision `0002` installs the row-level security policies.
@@ -162,9 +205,11 @@ To run the whole test suite against PostgreSQL, set `AJGEM_TEST_PG=1`. The defau
 Narrative questions such as "Where was spodumene reported?" can be answered by Claude. Answers are built only from cited document excerpts, and uncited text or figures not found in the cited text are withheld. Generation is off unless both of these are true:
 
 1. **Server configuration:** set `AJGEM_LLM_PROVIDER=anthropic` with credentials in `ANTHROPIC_API_KEY`. The optional settings are `AJGEM_LLM_MODEL` (default `claude-opus-5-5`), `AJGEM_LLM_EFFORT` (default `medium`), `AJGEM_LLM_TIMEOUT` (seconds), and `AJGEM_LLM_FALLBACKS` (`default`, or empty to disable the server-side refusal fallback).
-2. **Project policy:** an administrator allows it for the project under Administration → Generated answers and records the processing basis there.
+2. **Project policy:** an administrator allows it for the project under Administration → Language model and records the processing basis there.
 
 Otherwise the assistant returns search results only. Numerical questions never use the model.
+
+The same setting enables **model-assisted extraction** for PDF tables that the line-pattern extractor cannot read, such as wide certificates with analytes and units in a header row. The model receives the page's numbered lines and must return each cell as the exact text and line where it is printed (structured output against a JSON schema). A deterministic check rejects any cell that is not on the cited line verbatim, any reformatted or computed figure, and any result not on its sample's line. Invalid output is retried once with the reasons, and then the page goes to manual review (`EXTRACTION_MANUAL_REQUIRED`). Accepted rows become ordinary candidates, flagged `MODEL_EXTRACTED_VERIFY`, and still need second-person approval. Without the setting, such lines are flagged `UNPARSED_TABLE_LINES` instead of being skipped silently.
 
 The commands above use SQLite in `./var/` for development. Set `AJGEM_DATABASE_URL` for
 PostgreSQL, where decimals are stored as `NUMERIC`. Requests authenticate with an

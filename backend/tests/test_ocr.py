@@ -105,7 +105,7 @@ def _fake_page(conf_result: float) -> ocr.OcrPage:
     return ocr.OcrPage(line.text, [line], 90, 0, (595, 842), "tesseract-test", [])
 
 
-def test_low_confidence_figure_is_flagged(team, monkeypatch):
+def test_low_confidence_figure_is_flagged(team, monkeypatch, inline_parsers):
     monkeypatch.setattr(processing.ocr, "ocr_page", lambda data, idx, timeout=120: _fake_page(41))
     an, pid = team["analyst"], team["pid"]
     an.upload(pid, make_scanned_pdf([[]]), "faint.pdf")
@@ -117,7 +117,7 @@ def test_low_confidence_figure_is_flagged(team, monkeypatch):
     assert anchor["bbox"] == [110, 100, 140, 112] and anchor["confidence"] == 41
 
 
-def test_missing_ocr_engine_flags_page_for_manual_entry(team, monkeypatch):
+def test_missing_ocr_engine_flags_page_for_manual_entry(team, monkeypatch, inline_parsers):
     def unavailable(*_a, **_k):
         raise ocr.OcrUnavailable("Tesseract is not installed")
 
@@ -128,7 +128,7 @@ def test_missing_ocr_engine_flags_page_for_manual_entry(team, monkeypatch):
     assert unit["state"] == "flagged" and unit["issues"][0]["code"] == "OCR_REQUIRED"
 
 
-def test_ocr_timeout_is_retried_then_fails_actionably(team, monkeypatch):
+def test_ocr_timeout_is_retried_then_fails_actionably(team, monkeypatch, inline_parsers):
     calls = {"n": 0}
 
     def slow(*_a, **_k):
@@ -153,3 +153,49 @@ def test_page_image_link_is_signed_and_scoped(team, client):
     assert team["outsider"].get(url).status_code == 403
     assert client.get(url.replace("/pages/0.png", "/pages/9.png")).status_code == 403
     assert up["format"] == "pdf"
+
+
+def test_an_engine_that_cannot_start_is_not_reported_as_missing(monkeypatch):
+    """Only a missing binary means "not installed"; out of memory is a resource limit, anything else an OCR failure."""
+    import errno
+    import subprocess
+
+    def fails(err):
+        def run(*a, **k):
+            raise err
+        return run
+
+    monkeypatch.setattr(ocr.shutil, "which", lambda name: "/usr/bin/tesseract")
+    try:
+        ocr.tesseract_version.cache_clear()
+        monkeypatch.setattr(ocr.subprocess, "run", fails(FileNotFoundError(errno.ENOENT, "no such file")))
+        assert ocr.tesseract_version() is None
+        ocr.tesseract_version.cache_clear()
+        monkeypatch.setattr(ocr.subprocess, "run", fails(OSError(errno.ENOMEM, "Cannot allocate memory")))
+        with pytest.raises(MemoryError):
+            ocr.tesseract_version()
+        with pytest.raises(MemoryError):
+            ocr._run(["stdin", "stdout"], b"", 5)
+        monkeypatch.setattr(ocr.subprocess, "run", fails(PermissionError(errno.EACCES, "Permission denied")))
+        with pytest.raises(ocr.OcrFailed):
+            ocr._run(["stdin", "stdout"], b"", 5)
+        monkeypatch.setattr(ocr.subprocess, "run", fails(subprocess.TimeoutExpired("tesseract", 15)))
+        ocr.tesseract_version.cache_clear()
+        with pytest.raises(ocr.OcrFailed):
+            ocr.tesseract_version()
+    finally:
+        ocr.tesseract_version.cache_clear()
+
+
+def test_out_of_memory_ocr_flags_the_page_as_a_parser_limit(team, monkeypatch, inline_parsers):
+    import errno
+
+    def no_memory(*a, **k):
+        raise MemoryError(f"could not start Tesseract: {errno.errorcode[errno.ENOMEM]}")
+
+    monkeypatch.setattr(processing.ocr, "ocr_page", no_memory)
+    an, pid = team["analyst"], team["pid"]
+    up = an.upload(pid, make_scanned_pdf([["KW-1 Li 900 ppm"]]), "oom.pdf").json()
+    unit = an.get(f"/jobs/{up['job_id']}").json()["manifest"]["units"][0]
+    assert unit["state"] == "flagged" and unit["attempts"] == 1
+    assert unit["issues"][0]["code"] == "PARSER_MEMORY_LIMIT"

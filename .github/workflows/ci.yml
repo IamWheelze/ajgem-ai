@@ -43,6 +43,8 @@ jobs:
           cache-dependency-path: backend/requirements*.txt
       - name: Install Tesseract OCR
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-eng
+      - name: Allow unprivileged user namespaces (the parser sandbox uses them to drop network access)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: pip install -r requirements-dev.txt
       - name: Create owner and RLS-constrained runtime roles
         if: matrix.db == 'postgres'
@@ -54,6 +56,24 @@ jobs:
           CREATE ROLE ajgem_app LOGIN PASSWORD 'app_dev_pw' NOBYPASSRLS;
           CREATE DATABASE ajgem_test OWNER ajgem_owner;
           SQL
+      - name: Start a ClamAV daemon with a local EICAR signature (no signature download)
+        if: matrix.db == 'sqlite'
+        run: |
+          sudo apt-get install -y -q clamav-daemon
+          sudo systemctl stop clamav-daemon clamav-freshclam || true
+          mkdir -p /tmp/clam/db
+          # MD5 and length of the standard 68-byte EICAR test file.
+          echo '44d88612fea8a8f36de82e1278abb02f:68:Local.Test.EICAR' > /tmp/clam/db/local.hdb
+          printf 'DatabaseDirectory /tmp/clam/db\nTCPSocket 3310\nTCPAddr 127.0.0.1\nForeground yes\nStreamMaxLength 110M\n' > /tmp/clam/clamd.conf
+          sudo chown -R clamav /tmp/clam
+          # The log goes where the runner can write it; /tmp/clam now belongs to clamav.
+          sudo -u clamav clamd -c /tmp/clam/clamd.conf > "$RUNNER_TEMP/clamd.log" 2>&1 &
+          for i in $(seq 1 60); do
+            if (printf 'zPING\0') | nc -q1 127.0.0.1 3310 2>/dev/null | grep -q PONG; then echo "clamd ready after ${i}s"; break; fi
+            sleep 1
+          done
+          (printf 'zPING\0') | nc -q1 127.0.0.1 3310 | grep -q PONG || { echo "clamd did not start"; cat "$RUNNER_TEMP/clamd.log"; exit 1; }
+          echo "AJGEM_TEST_CLAMD=tcp://127.0.0.1:3310" >> "$GITHUB_ENV"
       - run: python -m pytest -rs
 
   frontend:

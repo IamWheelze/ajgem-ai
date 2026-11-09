@@ -1,5 +1,5 @@
 /** FR16/FR17 assistant: scoped questions, deterministic results, separated facts/calculations, citations. */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api, type Answer, type NarrativeAnswer, type StructuredAnswer, type ToolResult } from "../lib/api";
 import { qualified, reasonText, when } from "../lib/format";
@@ -264,7 +264,7 @@ function StructuredView({ a, onCite }: { a: StructuredAnswer; onCite: (t: string
     <div className="stack">
       <div className="row">
         {a.state && <StatusBadge status={a.state} label={`answer ${a.state}`} />}
-        <span className={`badge ${a.citations.supported ? "ok" : "bad"}`}>{a.citations.supported ? `${a.citations.anchor_ids.length} citations resolve` : `${a.citations.unresolved.length} citations unavailable`}</span>
+        <span className={`badge ${a.citations.supported ? "ok" : "bad"}`}>{a.citations.supported ? `${a.citations.count ?? a.citations.anchor_ids.length} citations resolve` : `${a.citations.unresolved.length} citations unavailable`}</span>
         <span className="faint">{r.tool} v{r.tool_version}</span>
       </div>
       {a.insufficient_evidence && <div className="notice warn"><div><strong>Insufficient evidence</strong>No approved records satisfy this query's scope. This is not a statement that none exist in unreviewed or unextracted material.</div></div>}
@@ -280,7 +280,25 @@ function StructuredView({ a, onCite }: { a: StructuredAnswer; onCite: (t: string
 function ThresholdView({ r, onCite }: { r: ToolResult; onCite: (t: string, ids: string[]) => void }) {
   const q = r.query!;
   const [show, setShow] = useState<"YES" | "INDETERMINATE" | "NO" | "ALL">("YES");
-  const rows = r.rows.filter((x) => show === "ALL" || x.outcome === show);
+  // Long answers arrive with their first 1000 rows; the rest are paged from the frozen snapshot.
+  const [paged, setPaged] = useState<{ key: string; items: ToolResult["rows"]; total: number } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const key = `${r.answer_id}:${show}`;
+  const total = show === "ALL" ? (r.rows_total ?? r.rows.length) : (r.counts?.[show] ?? 0);
+  const fetchRows = async (offset: number) => {
+    if (!r.answer_id) return;
+    setLoading(true);
+    try {
+      const page = await api.get<{ items: ToolResult["rows"]; total: number }>(`/answers/${r.answer_id}/rows`,
+        { outcome: show === "ALL" ? undefined : show, offset, limit: 1000 });
+      setPaged((prev) => ({ key, total: page.total, items: offset && prev?.key === key ? [...prev.items, ...page.items] : page.items }));
+    } finally { setLoading(false); }
+  };
+  useEffect(() => {
+    if (r.rows_truncated && paged?.key !== key) void fetchRows(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, r.rows_truncated]);
+  const rows = r.rows_truncated && paged?.key === key ? paged.items : r.rows.filter((x) => show === "ALL" || x.outcome === show);
   return (
     <>
       {r.deletion_notice && <div className="notice bad"><div><strong>Evidence deleted</strong>{r.deletion_notice.message}</div></div>}
@@ -292,10 +310,11 @@ function ThresholdView({ r, onCite }: { r: ToolResult; onCite: (t: string, ids: 
           <div className="chips" role="group" aria-label="Outcome filter">
             {(["YES", "INDETERMINATE", "NO", "ALL"] as const).map((k) => (
               <button key={k} className={`chip ${show === k ? "on" : ""}`} onClick={() => setShow(k)} aria-pressed={show === k}>
-                {k === "ALL" ? `All ${r.rows.length}` : `${k === "YES" ? "Meets" : k === "NO" ? "Does not meet" : "Indeterminate"} · ${r.counts?.[k] ?? 0}`}
+                {k === "ALL" ? `All ${r.rows_total ?? r.rows.length}` : `${k === "YES" ? "Meets" : k === "NO" ? "Does not meet" : "Indeterminate"} · ${r.counts?.[k] ?? 0}`}
               </button>
             ))}
           </div>
+          {r.rows_truncated && <div className="faint">Showing {rows.length.toLocaleString()} of {total.toLocaleString()} rows. Every row is kept in the frozen answer and in exports. {rows.length < total && <button className="small" disabled={loading} onClick={() => fetchRows(rows.length)}>{loading ? "Loading…" : "Load 1,000 more"}</button>}</div>}
           {(r.counts?.INDETERMINATE ?? 0) > 0 && <div className="faint">Indeterminate: a censored value (e.g. &lt;100 ppm) whose bound straddles the threshold. It is never substituted with a number.</div>}
           {(r.unmapped_matching_samples ?? 0) > 0 && <div className="faint">{r.unmapped_matching_samples} matching sample(s) have no approved location and are not on the map.</div>}
         </div>

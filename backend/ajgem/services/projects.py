@@ -52,8 +52,13 @@ def update_config(
     analyte_policy: dict | None = None,
     retention_policy: dict | None = None,
     provider_policy: dict | None = None,
+    cost_policy: dict | None = None,
 ) -> ProjectConfigRevision:
     access.require("project.manage")
+    if cost_policy is not None:
+        from .costs import validate_limits
+
+        cost_policy = validate_limits(cost_policy)
     if provider_policy is not None:
         allowed = {"allow_external_llm", "provider", "notes"}
         bad = set(provider_policy) - allowed
@@ -84,6 +89,7 @@ def update_config(
         analyte_policy=analyte_policy if analyte_policy is not None else (prev.analyte_policy if prev else {}),
         retention_policy=retention_policy if retention_policy is not None else (prev.retention_policy if prev else {}),
         provider_policy=provider_policy if provider_policy is not None else (prev.provider_policy if prev else {}),
+        cost_policy=cost_policy if cost_policy is not None else (prev.cost_policy if prev else {}),
         created_by=access.principal.user_id,
     )
     db.add(rev)
@@ -91,7 +97,7 @@ def update_config(
     audit.record(
         db, access.principal, "project.config", "project", project.id, project_id=project.id,
         before=str(project.config_revision - 1), after=str(project.config_revision),
-        detail={"provider_policy": provider_policy} if provider_policy is not None else None,
+        detail={k: v for k, v in (("provider_policy", provider_policy), ("cost_policy", cost_policy)) if v is not None} or None,
     )
     return rev
 

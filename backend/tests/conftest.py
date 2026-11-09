@@ -192,3 +192,11 @@ def make_scanned_pdf(pages: list[list[str]], rotate: int = 0, dpi: int = 200) ->
     out = io.BytesIO()
     images[0].save(out, format="PDF", resolution=dpi, save_all=True, append_images=images[1:])
     return out.getvalue()
+
+
+@pytest.fixture()
+def inline_parsers(app):
+    """Run parsers in-process, for tests that monkeypatch them (a sandboxed child would not see the patch)."""
+    app.state.ctx.settings.parser_sandbox = False
+    yield
+    app.state.ctx.settings.parser_sandbox = True

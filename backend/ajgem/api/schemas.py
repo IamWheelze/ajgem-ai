@@ -23,6 +23,11 @@ class ProjectConfig(Strict):
     analyte_policy: dict | None = None
     retention_policy: dict | None = None
     provider_policy: dict | None = None
+    cost_policy: dict | None = None
+
+
+class BudgetOverride(Strict):
+    reason: str
 
 
 class MemberGrant(Strict):

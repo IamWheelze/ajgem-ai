@@ -61,3 +61,14 @@ export function useAction<A extends unknown[], R>(fn: (...a: A) => Promise<R>) {
   );
   return { run, pending, error, clear: () => setError(undefined) };
 }
+
+/** Re-run `reload` every `ms` while `active` (e.g. while a job is queued or processing on a worker). */
+export function usePolling(active: boolean, reload: () => void, ms = 2000): void {
+  useEffect(() => {
+    if (!active) return;
+    const t = window.setInterval(reload, ms);
+    return () => window.clearInterval(t);
+  }, [active, reload, ms]);
+}
+
+export const RUNNING_JOB_STATES = ["queued", "processing"];

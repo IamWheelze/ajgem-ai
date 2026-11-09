@@ -1,9 +1,9 @@
 /** Administration: members and grants, project configuration, conversion factors, audit (FR01, FR02, FR21). */
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type DocumentList, type ProjectDetail } from "../lib/api";
+import { api, type DocumentList, type ProjectDetail, type UsageStatus } from "../lib/api";
 import { DeleteForm, TombstoneSummary, type Tombstone } from "../components/DeleteForm";
-import { ROLE_LABEL, when } from "../lib/format";
+import { ROLE_LABEL, bytes, when } from "../lib/format";
 import { useAction, useResource } from "../lib/hooks";
 import { useProject } from "../components/Layout";
 import { Empty, ErrorNotice, Loading } from "../components/ui";
@@ -21,6 +21,7 @@ export default function Admin() {
       {roles.has("admin") && <Members />}
       {roles.has("admin") && <Config />}
       {roles.has("admin") && <LanguageModelPolicy />}
+      {roles.has("admin") && <UsageAndBudget />}
       <Factors />
       {roles.has("admin") && <Audit />}
       {roles.has("admin") && <Documents />}
@@ -134,7 +135,7 @@ function LanguageModelPolicy() {
   return (
     <section className="card">
       <div className="card-head">
-        <h2>Generated answers (language model)</h2>
+        <h2>Language model (answers and extraction)</h2>
         {policy.allow_external_llm ? <span className="badge ok">allowed</span> : <span className="badge">off</span>}
       </div>
       <div className="card-pad stack">
@@ -142,6 +143,12 @@ function LanguageModelPolicy() {
           Narrative questions can be answered by an external language model that sees only the authorised document excerpts
           retrieval selects. Every statement must cite those excerpts; uncited text and figures not found in the cited text are withheld.
           Numerical questions always use the deterministic tools.
+        </p>
+        <p className="muted" style={{ margin: 0 }}>
+          The same permission lets PDF processing send a page's text to the model when the pattern extractor cannot read a table
+          (for example a wide certificate with analytes in the header). Every cell the model returns must be found verbatim on
+          the cited line or it is rejected; invalid output is retried once and then sent to manual review. Model-read rows are
+          ordinary candidates and still need a second person's approval.
         </p>
         <div className="faint">
           Server provider: {llm?.configured ? <strong>{llm.provider} · {llm.model}</strong> : <>none configured (set <code>AJGEM_LLM_PROVIDER=anthropic</code> and credentials on the server)</>}
@@ -155,6 +162,63 @@ function LanguageModelPolicy() {
         </label>
         <ErrorNotice error={save.error} />
         <div><button className="primary" disabled={(allow === null && notes === null) || (on && !text.trim()) || save.pending} onClick={save.run}>Save as new configuration revision</button></div>
+      </div>
+    </section>
+  );
+}
+
+const ofLimit = (used: number, limit: number | null | undefined) =>
+  limit === null || limit === undefined ? `${used.toLocaleString()} (no limit)` : `${used.toLocaleString()} of ${limit.toLocaleString()}`;
+
+function UsageAndBudget() {
+  const { pid } = useProject();
+  const u = useResource(() => api.get<UsageStatus>(`/projects/${pid}/usage`), [pid]);
+  const [pages, setPages] = useState<string | null>(null);
+  const [tokens, setTokens] = useState<string | null>(null);
+  const lim = u.data?.limits.project ?? {};
+  const pagesV = pages ?? (lim.monthly_pages ?? "").toString();
+  const tokensV = tokens ?? (lim.monthly_model_tokens ?? "").toString();
+  const save = useAction(async () => {
+    const parse = (v: string) => (v.trim() === "" ? null : Number(v));
+    await api.put(`/projects/${pid}/config`, { cost_policy: { monthly_pages: parse(pagesV), monthly_model_tokens: parse(tokensV) } });
+    setPages(null); setTokens(null); u.reload();
+  });
+  if (!u.data) return u.error ? <ErrorNotice error={u.error} /> : <Loading />;
+  const d = u.data;
+  const tok = (r: { input_tokens: number; output_tokens: number }) => (r.input_tokens + r.output_tokens).toLocaleString();
+  const rows: [string, string, string][] = [
+    ["Pages processed", d.usage.pages.quantity.toLocaleString(), "PDF pages parsed (text layer or OCR)"],
+    ["OCR pages", d.usage.ocr_pages.quantity.toLocaleString(), "Scanned pages read by OCR"],
+    ["Model extraction", `${d.usage.model_extraction.events} calls · ${tok(d.usage.model_extraction)} tokens`, "Tables read with the language model"],
+    ["Generated answers", `${d.usage.model_answers.events} calls · ${tok(d.usage.model_answers)} tokens`, "Narrative answers"],
+    ["Embeddings", "not used", "Search is keyword-based"],
+    ["Storage", bytes(d.storage_bytes), "Current stored originals"],
+    ["Egress", bytes(d.usage.export_bytes.quantity), "Export downloads"],
+  ];
+  return (
+    <section className="card">
+      <div className="card-head"><h2>Usage and budget</h2><span className="faint">since {when(d.period_start)}</span></div>
+      <div className="table-wrap">
+        <table className="data">
+          <thead><tr><th>Category</th><th>This month</th><th>What it counts</th></tr></thead>
+          <tbody>{rows.map(([a, b, c]) => <tr key={a}><td>{a}</td><td>{b}</td><td className="faint">{c}</td></tr>)}</tbody>
+        </table>
+      </div>
+      <div className="card-pad stack">
+        <div className="faint">
+          Pages this month: project {ofLimit(d.used.project.monthly_pages, d.limits.project.monthly_pages)}; organisation {ofLimit(d.used.organisation.monthly_pages, d.limits.organisation.monthly_pages)}.
+          Model tokens: project {ofLimit(d.used.project.monthly_model_tokens, d.limits.project.monthly_model_tokens)}; organisation {ofLimit(d.used.organisation.monthly_model_tokens, d.limits.organisation.monthly_model_tokens)}.
+        </div>
+        <p className="muted" style={{ margin: 0 }}>
+          A PDF job whose page estimate exceeds a limit waits on the Jobs page for an administrator's approval with a reason.
+          When model tokens run out, answers show search results only and unread tables go to manual review. The organisation budget is set by the operator.
+        </p>
+        <div className="form-grid">
+          <label className="field">Project pages per month<input inputMode="numeric" value={pagesV} placeholder="no limit" onChange={(e) => setPages(e.target.value)} /></label>
+          <label className="field">Project model tokens per month<input inputMode="numeric" value={tokensV} placeholder="no limit" onChange={(e) => setTokens(e.target.value)} /></label>
+        </div>
+        <ErrorNotice error={save.error} />
+        <div><button className="primary" disabled={(pages === null && tokens === null) || save.pending} onClick={save.run}>Save quotas as new configuration revision</button></div>
       </div>
     </section>
   );

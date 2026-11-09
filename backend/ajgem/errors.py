@@ -15,6 +15,7 @@ STATUS = {
     "SOURCE_CONFLICT": 409,
     "PARSE_PARTIAL": 422,
     "PROVIDER_UNAVAILABLE": 503,
+    "SCAN_UNAVAILABLE": 503,
     "QUOTA_EXCEEDED": 429,
     "REVISION_CONFLICT": 409,
     "DUPLICATE_SOURCE": 409,
@@ -41,6 +42,9 @@ class ApiError(Exception):
         self.message = message
         self.details = details
         self.status = status or STATUS.get(code, 400)
+
+    def __reduce__(self):  # picklable, so errors raised inside the parser sandbox reach the API unchanged
+        return (self.__class__, (self.code, self.message, self.details, self.status))
 
     def body(self, correlation_id: str | None = None) -> dict:
         out = {"error": {"code": self.code, "message": self.message}}

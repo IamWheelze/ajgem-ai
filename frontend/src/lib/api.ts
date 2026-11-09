@@ -140,6 +140,7 @@ export interface AnchorView {
     cell_ref: string | null;
     raw_text: string;
     bbox_convention?: string | null;
+    bbox_source?: "ocr" | "text_layer" | null;
     confidence?: number | null;
   };
   page?: {
@@ -174,7 +175,12 @@ export interface JobView {
   attempt: number;
   version_id: string | null;
   created_at?: string;
-  manifest: { units?: { unit: string; state: string; attempts: number; candidates: number; issues: Issue[] }[]; summary?: Record<string, number>; partial?: boolean; note?: string };
+  manifest: {
+    units?: { unit: string; state: string; attempts: number; candidates: number; issues: Issue[] }[]; summary?: Record<string, number>; partial?: boolean; note?: string;
+    estimate?: { pages: number; max_ocr_pages: number; model_assisted: boolean };
+    budget?: string[];
+    budget_override?: { by: string; reason: string; at: string };
+  };
   cost_counters: Record<string, number>;
   retryable: string[];
 }
@@ -219,7 +225,10 @@ export interface ToolResult {
   query?: { analyte: string; op: string; threshold: string; unit: string; basis: string | null };
   counts?: Record<Outcome, number>;
   rows: (ThresholdRow & Record<string, unknown>)[];
+  rows_total?: number;
+  rows_truncated?: boolean;
   exclusions?: Exclusion[];
+  exclusions_total?: number;
   calculation?: Record<string, unknown>;
   unmapped_matching_samples?: number;
   deletion_notice?: { message: string; deletion_request_id: string };
@@ -236,7 +245,7 @@ export interface StructuredAnswer {
   calculations: ToolResult[];
   interpretations: unknown[];
   result: ToolResult;
-  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean };
+  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean; count?: number };
   insufficient_evidence: boolean;
 }
 export interface SearchResult {
@@ -269,7 +278,7 @@ export interface NarrativeAnswer {
   notice: string;
   message: string | null;
   deletion_notice?: { message: string; deletion_request_id: string };
-  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean };
+  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean; count?: number };
   search?: SearchResult;
 }
 export type Answer = StructuredAnswer | RetrievalAnswer | NarrativeAnswer;
@@ -314,17 +323,42 @@ export interface ProjectDetail {
   config: null | {
     revision: number; boundary: GeoJSON.Polygon | GeoJSON.MultiPolygon | null; working_crs: string | null; created_by: string; created_at: string;
     provider_policy?: { allow_external_llm?: boolean; provider?: string | null; notes?: string };
+    cost_policy?: CostLimits;
   };
 }
 
 /** Page through /records until exhausted (or `max`). */
-export async function fetchRecords(pid: string, params: Record<string, unknown> = {}, max = 5000): Promise<RecordView[]> {
+export interface DateExclusions { undated: number; uncertain: number }
+
+/** All records matching the filters, plus (with date_from/date_to) how many the date filter could not place. */
+export async function fetchRecordsDetailed(pid: string, params: Record<string, unknown> = {}, max = 5000): Promise<{ records: RecordView[]; dateExcluded: DateExclusions | null }> {
   const out: RecordView[] = [];
+  let excluded = null as DateExclusions | null;
   let cursor: string | null = null;
   do {
-    const page: { records: RecordView[]; next_cursor: string | null } = await api.get(`/projects/${pid}/records`, { ...params, limit: 500, cursor });
+    const page: { records: RecordView[]; next_cursor: string | null; date_filter?: { excluded: DateExclusions } } =
+      await api.get(`/projects/${pid}/records`, { ...params, limit: 500, cursor });
     out.push(...page.records);
+    if (page.date_filter) {
+      const e = page.date_filter.excluded;
+      excluded = { undated: (excluded?.undated ?? 0) + e.undated, uncertain: (excluded?.uncertain ?? 0) + e.uncertain };
+    }
     cursor = page.next_cursor;
   } while (cursor && out.length < max);
-  return out;
+  return { records: out, dateExcluded: excluded };
+}
+
+export async function fetchRecords(pid: string, params: Record<string, unknown> = {}, max = 5000): Promise<RecordView[]> {
+  return (await fetchRecordsDetailed(pid, params, max)).records;
+}
+
+export interface CostLimits { monthly_pages?: number | null; monthly_model_tokens?: number | null }
+export interface UsageRow { events: number; quantity: number; input_tokens: number; output_tokens: number }
+export interface UsageStatus {
+  period_start: string;
+  usage: Record<"pages" | "ocr_pages" | "model_extraction" | "model_answers" | "export_bytes", UsageRow>;
+  limits: { project: CostLimits; organisation: CostLimits };
+  used: { project: { monthly_pages: number; monthly_model_tokens: number }; organisation: { monthly_pages: number; monthly_model_tokens: number } };
+  remaining: { project: CostLimits; organisation: CostLimits };
+  storage_bytes: number;
 }

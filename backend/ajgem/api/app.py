@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
+from decimal import Decimal
+
+import hmac
+import json
+import logging
+import time
 import uuid
 from collections.abc import Iterator
 
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from .. import security
 from ..context import Context, Settings
+from ..metrics import Registry
+from ..metrics import gauges as metrics_gauges
 from .. import migrate, rls
 from ..auth import OidcSettings, OidcVerifier, bearer_token, resolve_user_id
 from ..db import bind_rls_context, make_engine, make_session_factory
@@ -35,9 +45,24 @@ from ..models import (
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import deletion, processing, projects, queries, records, uploads
+from ..services import costs, deletion, processing, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
+
+log = logging.getLogger(__name__)
+
+
+def _json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()  # as FastAPI's encoder would
+    if isinstance(o, Decimal):
+        return str(o)  # exact, never a float
+    raise TypeError(f"{type(o).__name__} is not JSON serialisable")
+
+
+def fast_json(content) -> Response:
+    """Serialise large read results directly, skipping FastAPI's per-value jsonable_encoder walk (NF09)."""
+    return Response(json.dumps(content, default=_json_default, separators=(",", ":")), media_type="application/json")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -75,27 +100,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     elif settings.auth_mode != "dev":
         raise RuntimeError(f"Unknown AJGEM_AUTH_MODE {settings.auth_mode!r} (dev | oidc)")
     ctx = Context.from_settings(settings)
+    if oidc is not None and ctx.scanner.name == "signature_only":
+        log.warning("AJGEM_SCANNER=signature only detects the EICAR test file; set AJGEM_SCANNER=clamd before real data")
     app = FastAPI(title="AJGEM Exploration Evidence API", version="0.1.0")
     app.state.ctx, app.state.engine, app.state.sessions = ctx, engine, SessionLocal
     # Owner-role sessions bypass RLS: maintenance tools only (seeding, the dev user picker), never request data.
     app.state.admin_engine, app.state.admin_sessions = admin_engine, AdminSessions
 
+    registry = Registry()
+    app.state.metrics = registry
+    security.install(app, settings, api=True)
+
     @app.middleware("http")
     async def correlation(request: Request, call_next):
         cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
         request.state.cid = cid
+        t0 = time.perf_counter()
         resp = await call_next(request)
+        route = getattr(request.scope.get("route"), "path", None) or "unmatched"  # template, never raw ids
+        registry.observe_request(request.method, route, resp.status_code, time.perf_counter() - t0)
         resp.headers["X-Correlation-ID"] = cid
         return resp
 
     @app.exception_handler(ApiError)
     async def api_error(request: Request, exc: ApiError):
+        registry.error(exc.code)
         return JSONResponse(exc.body(getattr(request.state, "cid", None)), status_code=exc.status)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError):
         err = ApiError("INPUT_INVALID", "Request validation failed",
                        details=[{"loc": e["loc"], "msg": e["msg"]} for e in exc.errors()])
+        registry.error(err.code)
         return JSONResponse(err.body(getattr(request.state, "cid", None)), status_code=422)
 
     def db() -> Iterator[Session]:
@@ -147,7 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": pid, "name": a.project.name, "roles": sorted(a.roles), "llm": llm, "config": None if cfg is None else {
             "revision": cfg.revision, "boundary": cfg.boundary, "working_crs": cfg.working_crs,
             "analyte_policy": cfg.analyte_policy, "retention_policy": cfg.retention_policy,
-            "provider_policy": cfg.provider_policy or {},
+            "provider_policy": cfg.provider_policy or {}, "cost_policy": cfg.cost_policy or {},
             "created_by": cfg.created_by, "created_at": cfg.created_at.isoformat()}}
 
     @app.put("/projects/{pid}/config")
@@ -228,6 +264,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         a, _ = via(Job, jid, s, p)
         return processing.job_view(processing.retry(s, ctx, a, jid, body.units))
 
+    @app.post("/jobs/{jid}/budget-override")
+    def budget_override(jid: str, body: S.BudgetOverride, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(Job, jid, s, p, "project.manage")
+        return processing.job_view(processing.approve_over_budget(s, ctx, a, jid, body.reason))
+
+    @app.get("/projects/{pid}/usage")
+    def project_usage(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a = project_access(s, p, pid, "project.manage")
+        return costs.status(s, a)
+
     @app.post("/jobs/{jid}/cancel")
     def cancel_job(jid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
         a, _ = via(Job, jid, s, p)
@@ -255,11 +301,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/projects/{pid}/records")
     def list_records(pid: str, kind: str | None = None, status: str | None = None, analyte: str | None = None,
                      laboratory: str | None = None, campaign: str | None = None, method: str | None = None,
-                     missing_coordinates: bool | None = None, cursor: str | None = None,
+                     missing_coordinates: bool | None = None, date_from: date | None = None,
+                     date_to: date | None = None, cursor: str | None = None,
                      limit: int = Query(default=100, le=500), s: Session = Depends(db), p: Principal = Depends(principal)):
         a = project_access(s, p, pid)
         drafts = a.can("records.read_drafts")
-        q = select(Record).where(Record.project_id == pid).order_by(Record.id)
+        if date_from and date_to and date_from > date_to:
+            raise ApiError("INPUT_INVALID", "date_from is after date_to")
+        dated = date_from is not None or date_to is not None
+        sample_dates = records.sample_dates(s, pid, drafts) if dated else {}
+        date_excluded = {"undated": 0, "uncertain": 0}
+        # One query: each record with the revision this user may see, filtered in the database (NF09).
+        shown_no = Record.current_revision_no if drafts else Record.approved_revision_no
+        q = (select(Record, RecordRevision)
+             .join(RecordRevision, and_(RecordRevision.record_id == Record.id, RecordRevision.revision_no == shown_no))
+             .where(Record.project_id == pid).order_by(Record.id))
         if kind:
             q = q.where(Record.kind == kind)
         if status:
@@ -268,25 +324,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             q = q.where(Record.approved_revision_no.is_not(None))
         if cursor:
             q = q.where(Record.id > cursor)
+        for field_name, wanted in (("analyte", analyte), ("laboratory", laboratory), ("campaign", campaign),
+                                   ("method", method)):
+            if wanted:
+                q = q.where(RecordRevision.data[field_name].as_string() == wanted)
+        if missing_coordinates is not None:
+            unplaced = or_(RecordRevision.lon.is_(None), RecordRevision.lat.is_(None))
+            q = q.where(Record.kind == "sample", unplaced if missing_coordinates else ~unplaced)
+        if not dated:
+            q = q.limit(limit)
         out = []
-        for r in s.scalars(q):
-            v = records.record_view(s, r, include_drafts=drafts)
+        for r, rev in s.execute(q):
+            v = records.record_view(s, r, include_drafts=drafts, shown_revision=rev)
             d = v.get("data") or {}
-            if analyte and d.get("analyte") != analyte:
-                continue
-            if laboratory and d.get("laboratory") != laboratory:
-                continue
-            if campaign and d.get("campaign") != campaign:
-                continue
-            if method and d.get("method") != method:
-                continue
-            if missing_coordinates is not None:
-                if r.kind != "sample" or (v.get("geometry") is None) != missing_coordinates:
+            if dated:
+                verdict = records.date_in_range(records.record_date(r, d, sample_dates), date_from, date_to)
+                if verdict != "yes":
+                    if verdict in date_excluded:
+                        date_excluded[verdict] += 1
                     continue
             out.append(v)
             if len(out) >= limit:
                 break
-        return {"records": out, "next_cursor": out[-1]["id"] if len(out) >= limit else None}
+        res = {"records": out, "next_cursor": out[-1]["id"] if len(out) >= limit else None}
+        if dated:
+            # Records the date filter could not place are counted, never silently treated as outside the range.
+            res["date_filter"] = {"from": date_from, "to": date_to, "basis": {
+                "sample": "collection date", "assay": "collection date of its sample", "certificate": "issue date"},
+                "excluded": date_excluded}
+        return res
 
     @app.get("/records/{rid}")
     def get_record(rid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
@@ -348,12 +414,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 assert len(box) == 4
             except (ValueError, AssertionError):
                 raise ApiError("INPUT_INVALID", "bbox must be minLon,minLat,maxLon,maxLat") from None
-        return queries.features(s, project_access(s, p, pid), box)
+        return fast_json(queries.features(s, project_access(s, p, pid), box))
 
     @app.post("/projects/{pid}/questions")
     def ask(pid: str, body: S.QuestionIn, s: Session = Depends(db), p: Principal = Depends(principal)):
-        return queries.ask(s, project_access(s, p, pid), body.question, body.tool, body.params,
-                           provider=ctx.answer_provider)
+        return fast_json(queries.ask(s, project_access(s, p, pid), body.question, body.tool, body.params,
+                                     provider=ctx.answer_provider))
 
     @app.get("/answers/{aid}")
     def get_answer(aid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
@@ -361,15 +427,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         a, _ = via(AnswerSnapshot, aid, s, p)
         snap = queries.get_snapshot(s, a, aid)
-        return {"id": snap.id, "state": snap.state, "stale_reason": snap.stale_reason, "question": snap.question,
-                "params": snap.params, "result": snap.result, "created_at": snap.created_at.isoformat()}
+        return fast_json({"id": snap.id, "state": snap.state, "stale_reason": snap.stale_reason, "question": snap.question,
+                          "params": snap.params, "result": queries.page_of(snap.result or {}),
+                          "created_at": snap.created_at.isoformat()})
+
+    @app.get("/answers/{aid}/rows")
+    def answer_rows(aid: str, part: str = "rows", outcome: str | None = None, offset: int = Query(default=0, ge=0),
+                    limit: int = Query(default=1000, ge=1, le=5000), s: Session = Depends(db),
+                    p: Principal = Depends(principal)):
+        """Page through a frozen answer's rows or exclusions (responses carry the first 1000)."""
+        from ..models import AnswerSnapshot
+
+        a, _ = via(AnswerSnapshot, aid, s, p)
+        snap = queries.get_snapshot(s, a, aid)
+        return fast_json(queries.rows_page(snap.result or {}, part, outcome, offset, limit))
 
     @app.post("/answers/{aid}/rerun")
     def rerun(aid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
         from ..models import AnswerSnapshot
 
         a, _ = via(AnswerSnapshot, aid, s, p)
-        return queries.rerun_snapshot(s, a, aid)
+        out = queries.rerun_snapshot(s, a, aid)
+        return fast_json({**out, "result": queries.page_of(out["result"])})
 
     # ------------------------------------------------------------ sources
     @app.get("/sources/{vid}/anchors/{aid}")
@@ -417,6 +496,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def download(eid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
         a, _ = via(Export, eid, s, p)
         e = exports_svc.download_export(s, a, eid)
+        costs.record(s, a.project.organisation_id, a.project.id, "export_bytes", len(e.payload), detail={"export_id": e.id})
         return Response(e.payload, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="export-{e.id}.zip"',
                                  "Cache-Control": "private, no-store"})
@@ -462,6 +542,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         u, org = s.get(User, p.user_id), s.get(Organisation, p.organisation_id)
         return {"id": u.id, "email": u.email, "name": u.name, "organisation": {"id": org.id, "name": org.name},
                 "mfa": p.mfa, "auth_mode": "oidc" if oidc is not None else "dev"}
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics(authorization: str | None = Header(default=None)):
+        """Operator metrics (Prometheus text). Disabled unless AJGEM_METRICS_TOKEN is set; aggregates only."""
+        token = settings.metrics_token
+        if not token:
+            raise ApiError("NOT_FOUND", "Metrics are disabled", status=404)
+        if not authorization or not hmac.compare_digest(authorization, f"Bearer {token}"):
+            raise ApiError("AUTH_REQUIRED", "Metrics need the operator token")
+        return Response(registry.render(metrics_gauges(AdminSessions)), media_type="text/plain; version=0.0.4")
+
+    @app.get("/health")
+    def health():
+        """Public readiness check: database reachable and the malware scanner answering. No tenant data."""
+        out = {"database": "ok", "scanner": {"name": ctx.scanner.name, "status": "ok"}}
+        try:
+            with engine.connect() as c:
+                c.execute(select(1))
+        except Exception:
+            out["database"] = "unavailable"
+        if hasattr(ctx.scanner, "version"):
+            try:
+                ctx.scanner.version()
+            except Exception:
+                out["scanner"]["status"] = "unavailable"
+        elif ctx.scanner.name == "signature_only":
+            out["scanner"]["status"] = "development_only"
+        ok = out["database"] == "ok" and out["scanner"]["status"] != "unavailable"
+        return JSONResponse({"status": "ok" if ok else "degraded", **out}, status_code=200 if ok else 503)
 
     @app.get("/auth/config")
     def auth_config():

@@ -3,15 +3,18 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Text, and_, cast, select
 from sqlalchemy.orm import Session
 
 from ..errors import ApiError
 from ..models import AnswerSnapshot, ConflictGroup, Record, RecordRevision
+from ..science.dates import DateIssue, parse_date
+from ..science.dates import interval as date_interval
 from ..science import crs as crs_mod
 from ..science.analytes import AnalyteRegistry, UnknownAnalyte
 from ..science.geometry import point_in_boundary
@@ -21,13 +24,15 @@ from . import audit
 from .access import ProjectAccess
 from .projects import current_config, registry_for
 
-VALIDATION_RULES_VERSION = "rules-2026.11.0"
+VALIDATION_RULES_VERSION = "rules-2026.11.1"
 
 SAMPLE_FIELDS = {
-    "sample_id", "campaign", "sample_type", "collection_date", "raw_x", "raw_y", "source_crs",
+    "sample_id", "campaign", "sample_type", "collection_date", "collection_date_iso", "raw_x", "raw_y", "source_crs",
     "axis_order", "crs_confirmed", "uncertainty_m", "positioning_method",
 }
-CERTIFICATE_FIELDS = {"certificate_number", "laboratory", "issue_date", "revision_label", "methods"}
+CERTIFICATE_FIELDS = {"certificate_number", "laboratory", "issue_date", "issue_date_iso", "revision_label", "methods"}
+# Derived by validation from the raw date text; never taken from input.
+DATE_FIELDS = {"sample": ("collection_date", "collection_date_iso"), "certificate": ("issue_date", "issue_date_iso")}
 ASSAY_FIELDS = {
     "sample_id", "campaign", "certificate_number", "laboratory", "analyte", "result_raw", "unit",
     "basis", "method", "detection_limit", "detection_limit_unit", "comparator", "value",
@@ -128,7 +133,57 @@ def validate(kind: str, data: dict, registry: AnalyteRegistry, boundary: dict | 
             issues.append(issue("CERTIFICATE_NUMBER_MISSING", "critical", "certificate_number", "Certificate number missing"))
         if not d.get("laboratory"):
             issues.append(issue("LABORATORY_MISSING", "warning", "laboratory", "Laboratory not identified"))
+    if kind in DATE_FIELDS:
+        raw_f, iso_f = DATE_FIELDS[kind]
+        d[iso_f] = None
+        try:
+            pd = parse_date(d.get(raw_f))
+            if pd:
+                d[iso_f] = pd.iso
+                for w in pd.warnings:
+                    msg = {"DATE_IN_FUTURE": f"Date '{pd.raw}' is in the future",
+                           "DATE_MONTH_FIRST": f"Date '{pd.raw}' was read month-first because its second part is over 12"}[w]
+                    issues.append(issue(w, "warning", raw_f, msg))
+        except DateIssue as e:
+            issues.append(issue(e.code, "warning", raw_f, f"{e}; the date stays unknown"))
     return d, issues
+
+
+def sample_dates(db: Session, project_id: str, include_drafts: bool) -> dict[str, str | None]:
+    """sample_key -> normalised collection date of the sample record (approved revision unless drafts are visible)."""
+    out: dict[str, str | None] = {}
+    for rec in db.scalars(select(Record).where(Record.project_id == project_id, Record.kind == "sample")):
+        no = rec.current_revision_no if include_drafts else rec.approved_revision_no
+        if not no or not rec.sample_key:
+            continue
+        rev = revision(db, rec, no)
+        iso = (rev.data or {}).get("collection_date_iso")
+        # Two sample records with the same key and different dates leave the date unknown, not either one.
+        out[rec.sample_key] = iso if out.get(rec.sample_key, iso) == iso else None
+    return out
+
+
+def record_date(rec: Record, data: dict, sample_dates_: dict[str, str | None]) -> str | None:
+    if rec.kind == "sample":
+        return data.get("collection_date_iso")
+    if rec.kind == "certificate":
+        return data.get("issue_date_iso")
+    return sample_dates_.get(rec.sample_key) if rec.sample_key else None
+
+
+def date_in_range(iso: str | None, date_from, date_to) -> str:
+    """'yes', 'no', 'undated' or 'uncertain' (a month or year that straddles a bound)."""
+    iv = date_interval(iso)
+    if iv is None:
+        return "undated"
+    start, end = iv
+    lo_ok_all, lo_ok_any = (date_from is None or start >= date_from), (date_from is None or end >= date_from)
+    hi_ok_all, hi_ok_any = (date_to is None or end <= date_to), (date_to is None or start <= date_to)
+    if lo_ok_all and hi_ok_all:
+        return "yes"
+    if lo_ok_any and hi_ok_any:
+        return "uncertain"
+    return "no"
 
 
 def _boundary(db: Session, project_id: str) -> dict | None:
@@ -202,6 +257,63 @@ def revision(db: Session, record: Record, no: int | None = None) -> RecordRevisi
     return rev
 
 
+def with_revisions(db: Session, project_id: str, kind: str | None = None, *, approved: bool = True):
+    """(record, revision) pairs in one query: the approved revision, or the current one when approved=False.
+
+    Replaces a revision lookup per record, which dominated query time at pilot scale (NF09).
+    """
+    no = Record.approved_revision_no if approved else Record.current_revision_no
+    q = (select(Record, RecordRevision)
+         .join(RecordRevision, and_(RecordRevision.record_id == Record.id, RecordRevision.revision_no == no))
+         .where(Record.project_id == project_id))
+    if kind:
+        q = q.where(Record.kind == kind)
+    if approved:
+        q = q.where(Record.approved_revision_no.is_not(None))
+    return db.execute(q.order_by(Record.sample_key, Record.id)).all()
+
+
+@dataclass(slots=True)
+class RecordRow:
+    """The few record columns read-heavy queries need, without ORM instances (NF09)."""
+    id: str
+    sample_key: str | None
+    stale: bool
+
+
+@dataclass(slots=True)
+class RevisionRow:
+    id: str
+    revision_no: int
+    data: dict
+    anchor_ids: list
+
+
+def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ...]) -> list[tuple[RecordRow, RevisionRow]]:
+    """Approved (record, revision) pairs as plain rows, for read-heavy queries at pilot scale (NF09).
+
+    One query, run outside the ORM and its type processing. Each revision document is fetched once as text and
+    parsed once (a `json` column is re-parsed by PostgreSQL for every field extracted, which was slower).
+    `RevisionRow.data` holds just the named `fields`, as text.
+    """
+    import json
+
+    q = (select(Record.id, Record.sample_key, Record.stale, RecordRevision.id, RecordRevision.revision_no,
+                cast(RecordRevision.anchor_ids, Text), cast(RecordRevision.data, Text))
+         .join(RecordRevision, and_(RecordRevision.record_id == Record.id,
+                                    RecordRevision.revision_no == Record.approved_revision_no))
+         .where(Record.project_id == project_id, Record.kind == kind, Record.approved_revision_no.is_not(None))
+         .order_by(Record.sample_key, Record.id))
+    out = []
+    for row in db.connection().execute(q):
+        rid, key, stale, vid, no, anchors, doc = row
+        full = json.loads(doc) if doc else {}
+        data = {k: (None if full.get(k) is None else str(full[k])) for k in fields}
+        out.append((RecordRow(rid, key, bool(stale)),
+                    RevisionRow(vid, no, data, json.loads(anchors) if anchors and anchors != "[]" else [])))
+    return out
+
+
 def get_record(db: Session, access: ProjectAccess, record_id: str) -> Record:
     rec = db.get(Record, record_id)
     if rec is None or rec.project_id != access.project.id:
@@ -211,8 +323,8 @@ def get_record(db: Session, access: ProjectAccess, record_id: str) -> Record:
     return rec
 
 
-def record_view(db: Session, rec: Record, include_drafts: bool = True) -> dict:
-    cur = revision(db, rec)
+def record_view(db: Session, rec: Record, include_drafts: bool = True, shown_revision: RecordRevision | None = None) -> dict:
+    """`shown_revision` may be passed when the caller already loaded it (the current one, or the approved one)."""
     out: dict[str, Any] = {
         "id": rec.id,
         "kind": rec.kind,
@@ -222,7 +334,12 @@ def record_view(db: Session, rec: Record, include_drafts: bool = True) -> dict:
         "approved_revision_no": rec.approved_revision_no,
         "source_version_id": rec.source_version_id,
     }
-    shown = cur if include_drafts else (revision(db, rec, rec.approved_revision_no) if rec.approved_revision_no else None)
+    if shown_revision is not None:
+        shown = shown_revision
+    elif include_drafts:
+        shown = revision(db, rec)
+    else:
+        shown = revision(db, rec, rec.approved_revision_no) if rec.approved_revision_no else None
     if shown:
         out.update(
             revision_id=shown.id,

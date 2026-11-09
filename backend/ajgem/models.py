@@ -40,6 +40,8 @@ class Organisation(Base):
     __tablename__ = "organisations"
     id: Mapped[str] = _id()
     name: Mapped[str] = mapped_column(String(200))
+    # NF11 organisation budget per calendar month (UTC): {"monthly_pages": int, "monthly_model_tokens": int}.
+    budget: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     created_at: Mapped[datetime] = _ts()
 
 
@@ -87,6 +89,8 @@ class ProjectConfigRevision(Base):
     retention_policy: Mapped[dict] = mapped_column(JSON, default=dict)
     # NF04 processing policy: whether evidence may be sent to an external language model, and which provider.
     provider_policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    # NF11 project quotas per calendar month (UTC): {"monthly_pages": int, "monthly_model_tokens": int}.
+    cost_policy: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     created_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
 
@@ -229,6 +233,11 @@ class Job(Base):
     created_at: Mapped[datetime] = _ts()
     updated_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    # Durable queue (worker executor): a worker holds a lease while it processes the job; an expired
+    # lease means the worker died and another may take over. `claims` bounds how often that happens.
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claims: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     tasks: Mapped[list["JobTask"]] = relationship(order_by="JobTask.unit_key")
 
 
@@ -406,3 +415,20 @@ def _no_audit_update(*_):
 @event.listens_for(AuditEvent, "before_delete")
 def _no_audit_delete(*_):
     raise AuditImmutable("Audit events cannot be deleted")
+
+
+class UsageEvent(Base):
+    """NF08/NF11 metered usage: counts and tokens only, never evidence text."""
+
+    __tablename__ = "usage_events"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"), index=True)
+    # Kept when a project is deleted: usage is billing history, not project content.
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = _ts()

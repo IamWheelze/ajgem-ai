@@ -1,6 +1,6 @@
 /** Data explorer: filterable samples/assays, missing-data lists, governing status (FR14). */
 import { useMemo, useState } from "react";
-import { api, fetchRecords, type ConflictView, type RecordView, type SearchResult } from "../lib/api";
+import { api, fetchRecordsDetailed, type ConflictView, type RecordView, type SearchResult } from "../lib/api";
 import { qualified, recordTitle } from "../lib/format";
 import { useAction, useResource } from "../lib/hooks";
 import { useProject } from "../components/Layout";
@@ -12,7 +12,11 @@ export default function Explorer() {
   const [kind, setKind] = useState<"assay" | "sample" | "certificate">("assay");
   const [status, setStatus] = useState(can("drafts") ? "" : "approved");
   const [f, setF] = useState({ analyte: "", laboratory: "", campaign: "", method: "", missing: false, text: "" });
-  const recs = useResource(() => fetchRecords(pid, { kind, status: status || undefined }), [pid, kind, status]);
+  const [dates, setDates] = useState({ from: "", to: "" });
+  const dated = useResource(() => fetchRecordsDetailed(pid, { kind, status: status || undefined, date_from: dates.from || undefined, date_to: dates.to || undefined }),
+    [pid, kind, status, dates.from, dates.to]);
+  const recs = { ...dated, data: dated.data?.records };
+  const dateExcluded = dated.data?.dateExcluded ?? null;
   const conflicts = useResource(() => (can("drafts") ? api.get<{ conflicts: ConflictView[] }>(`/projects/${pid}/conflicts`) : Promise.resolve({ conflicts: [] })), [pid]);
   const [drawer, setDrawer] = useState<{ title: string; items: EvidenceItem[] } | null>(null);
   const [q, setQ] = useState("");
@@ -75,10 +79,19 @@ export default function Explorer() {
             </>
           )}
           <label className="field">Campaign<select value={f.campaign} onChange={(e) => setF({ ...f, campaign: e.target.value })}><option value="">Any</option>{values("campaign").map((v) => <option key={v}>{v}</option>)}</select></label>
+          <label className="field">{kind === "certificate" ? "Issued from" : "Collected from"}<input type="date" value={dates.from} onChange={(e) => setDates({ ...dates, from: e.target.value })} /></label>
+          <label className="field">to<input type="date" value={dates.to} onChange={(e) => setDates({ ...dates, to: e.target.value })} /></label>
           <label className="field">Contains<input value={f.text} onChange={(e) => setF({ ...f, text: e.target.value })} placeholder="filter rows" /></label>
           {kind === "sample" && <label className="check" style={{ alignSelf: "end" }}><input type="checkbox" checked={f.missing} onChange={(e) => setF({ ...f, missing: e.target.checked })} /> Only samples without approved coordinates</label>}
         </div>
-        <div className="card-head"><span className="faint">{rows.length} of {recs.data?.length ?? 0} records</span></div>
+        <div className="card-head">
+          <span className="faint">{rows.length} of {recs.data?.length ?? 0} records</span>
+          {dateExcluded && (dateExcluded.undated > 0 || dateExcluded.uncertain > 0) && (
+            <span className="faint" title={kind === "assay" ? "Assays are dated by the collection date of their sample" : undefined}>
+              Not shown: {dateExcluded.undated} with no usable date, {dateExcluded.uncertain} whose month or year only partly overlaps the range
+            </span>
+          )}
+        </div>
         {recs.loading && !recs.data ? <Loading /> : recs.error ? <ErrorNotice error={recs.error} /> : rows.length === 0 ? <Empty>No records match.</Empty> : (
           <div className="table-wrap" style={{ maxHeight: "62vh" }}>
             <table className="data">

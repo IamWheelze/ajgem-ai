@@ -1,0 +1,45 @@
+"""NF09: long structured answers are sent in pages; the frozen snapshot and the counts stay complete."""
+
+from __future__ import annotations
+
+from ajgem.services import queries
+
+from .conftest import CSV_MAPPING, make_assay_csv
+
+
+def test_long_answers_are_paged_from_the_frozen_snapshot(team, app, monkeypatch):
+    an, rv, pid = team["analyst"], team["rev1"], team["pid"]
+    v = an.upload(pid, make_assay_csv(30), "p.csv").json()
+    pv = an.post(f"/versions/{v['version_id']}/import-previews", json={"mapping": CSV_MAPPING}).json()
+    an.post(f"/imports/{pv['id']}/commit", json={"preview_hash": pv["preview_hash"]})
+    for r in an.get(f"/projects/{pid}/records", params={"kind": "assay", "limit": 500}).json()["records"]:
+        rv.post(f"/records/{r['id']}/review", json={"expected_revision_no": 1, "decision": "approve",
+                                                     "acknowledge_warnings": [i["code"] for i in r["issues"]]})
+    monkeypatch.setattr(queries, "ROWS_IN_RESPONSE", 7)
+    monkeypatch.setattr(queries.page_of, "__defaults__", (7,))
+    body = an.post(f"/projects/{pid}/questions", json={"question": "Which samples exceed 100 ppm Li?"}).json()
+    res = body["result"]
+    total = sum(res["counts"].values())
+    assert len(res["rows"]) == 7 and res["rows_total"] == total > 7 and res["rows_truncated"] is True
+    assert len(body["source_statements"]) == 7 and "rows" not in body["calculations"][0]
+    assert body["citations"]["supported"] is True
+    aid = body["answer_id"]
+    # Paging returns every row exactly once, in the frozen order, optionally by outcome.
+    seen, offset = [], 0
+    while True:
+        page = an.get(f"/answers/{aid}/rows", params={"offset": offset, "limit": 5}).json()
+        if not page["items"]:
+            break
+        seen += [x["record_id"] for x in page["items"]]
+        offset += len(page["items"])
+    assert len(seen) == len(set(seen)) == total
+    yes = an.get(f"/answers/{aid}/rows", params={"outcome": "YES", "limit": 5000}).json()
+    assert yes["total"] == res["counts"]["YES"] and {x["outcome"] for x in yes["items"]} == {"YES"}
+    assert an.get(f"/answers/{aid}/rows", params={"part": "bogus"}).status_code == 422
+    # The stored answer and a re-run are shown the same way, and the re-run still reproduces exactly.
+    again = an.get(f"/answers/{aid}").json()
+    assert len(again["result"]["rows"]) == 7 and again["result"]["rows_total"] == total
+    rerun = an.post(f"/answers/{aid}/rerun").json()
+    assert rerun["reproduced"] is True and len(rerun["result"]["rows"]) == 7
+    # Other projects' members cannot page someone else's answer.
+    assert team["outsider"].get(f"/answers/{aid}/rows").status_code == 403
