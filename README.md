@@ -156,6 +156,16 @@ python -m ajgem worker
 
 The worker needs the same environment as the API. A worker leases a job, runs it page by page with each page committed on its own, and acts as the user who started the job, under the same access checks and row-level security. If a worker dies, its lease expires (`AJGEM_JOB_LEASE_SECONDS`, default 300) and another worker continues from the next unfinished page. A job whose pages keep stopping workers is failed after five attempts, so it cannot loop forever. Cancelling takes effect between pages. The web client polls queued and running jobs.
 
+### Usage, quotas and budgets
+
+Every billable step is metered without storing evidence: pages parsed, OCR pages, language-model calls and tokens (extraction and answers kept apart), and export bytes. Storage is measured from stored originals. Administrators see this month's figures under Administration → Usage and budget, and can set project quotas there (pages and model tokens per month). These quotas are versioned like the rest of the project configuration. The operator sets an organisation-wide budget:
+
+```bash
+python -m ajgem set-budget "Kano Exploration" --pages 5000 --model-tokens 2000000
+```
+
+Use `none` to clear a limit. A PDF job whose page estimate would exceed either limit does not start. It waits on the Jobs page until a project administrator approves it with a reason, which is audited. When model tokens run out, answers fall back to search results and unread tables go to manual review (`MODEL_BUDGET_EXHAUSTED`).
+
 ### Parser sandbox
 
 PDF inspection, page rendering, OCR and spreadsheet reading run in a child process with a CPU limit (`AJGEM_PARSER_CPU_SECONDS`, default 300), a memory limit (`AJGEM_PARSER_MEMORY_MB`, default 2048) and a wall-clock deadline. The child also has no network: it moves into new user and network namespaces. Some hosts disable unprivileged user namespaces. Ubuntu 24.04, for example, needs `sysctl kernel.apparmor_restrict_unprivileged_userns=0`; on such hosts, run the service in a container without network access instead. Each page's quality record shows whether isolation was in effect (`sandbox.network_isolated`). A page that hits a limit is flagged for manual entry and is not retried. `AJGEM_PARSER_SANDBOX=0` runs parsers in-process, for debugging only.

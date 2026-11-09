@@ -223,6 +223,7 @@ export function JobPanel({ jobId }: { jobId: string }) {
         <div className="row">{RUNNING_JOB_STATES.includes(j.state) && <span className="faint">Processing on a worker; this updates by itself.</span>}<StatusBadge status={j.state} />{j.retryable.length > 0 && <button className="small" onClick={retry}>Retry {j.retryable.length} failed</button>}</div>
       </div>
       <ErrorNotice error={err} />
+      <BudgetPanel job={j} onChange={job.setData} />
       <div className="table-wrap" style={{ maxHeight: 320 }}>
         <table className="data">
           <thead><tr><th>Unit</th><th>State</th><th className="num">Attempts</th><th className="num">Candidates</th><th>Issues</th></tr></thead>
@@ -240,6 +241,37 @@ export function JobPanel({ jobId }: { jobId: string }) {
         </table>
       </div>
       {j.manifest.note && <div className="card-pad faint">{j.manifest.note}</div>}
+    </div>
+  );
+}
+
+function BudgetPanel({ job, onChange }: { job: JobView; onChange: (j: JobView) => void }) {
+  const { roles } = useProject();
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState<unknown>();
+  const m = job.manifest;
+  if (!m.estimate && !m.budget_override) return null;
+  const approve = async () => {
+    try { onChange(await api.post<JobView>(`/jobs/${job.id}/budget-override`, { reason })); } catch (e) { setErr(e); }
+  };
+  return (
+    <div className="card-pad stack" style={{ borderBottom: "1px solid var(--border)" }}>
+      {m.estimate && <div className="faint">Estimate before processing: {m.estimate.pages} page(s), up to {m.estimate.max_ocr_pages} by OCR{m.estimate.model_assisted ? "; tables the pattern reader cannot parse may be sent to the language model" : ""}.</div>}
+      {job.state === "awaiting_budget_approval" && (
+        <>
+          <div><strong>Waiting for budget approval.</strong> {m.budget?.join(" ")}</div>
+          {roles.has("admin") ? (
+            <div className="row">
+              <label className="field" style={{ flex: 1 }}>Reason for processing above budget (recorded in the audit log)
+                <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. certificate needed for the board pack" />
+              </label>
+              <button className="primary" style={{ alignSelf: "flex-end" }} disabled={reason.trim().length < 10} onClick={approve}>Approve and process</button>
+            </div>
+          ) : <div className="faint">A project administrator can approve it with a reason, or raise the quota.</div>}
+          <ErrorNotice error={err} />
+        </>
+      )}
+      {m.budget_override && <div className="faint">Approved above budget: “{m.budget_override.reason}” ({when(m.budget_override.at)})</div>}
     </div>
   );
 }

@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from ..errors import ApiError
 from ..models import AnswerSnapshot, DocumentVersion, PageText, SourceAnchor
-from . import audit
+from . import audit, costs
 from .access import ProjectAccess
 from .llm import ADAPTER_VERSION, AnswerProvider, Passage, PassageBlock, ProviderError, ProviderUnavailable
 from .ocr import text_layer_lines
@@ -193,12 +193,19 @@ def narrative(db: Session, access: ProjectAccess, question: str, provider: Answe
                   "message": "No extracted document text matches this question. This is not evidence that the "
                              "information is absent from the original documents (scans without OCR, unextracted files)."}
         return _save(db, access, question, result, passages)
+    ok, why = costs.model_tokens_left(db, access)
+    if not ok:
+        return {**base, "status": "budget_exhausted", "message": f"{why}; showing search results only. An administrator "
+                                                                  "can raise the quota under Administration."}
     try:
         ans = provider.answer(question, passages)
     except ProviderUnavailable as e:
         return {**base, "status": "provider_unavailable", "message": f"{e} Showing search results only."}
     except ProviderError as e:
         raise ApiError("PROVIDER_UNAVAILABLE", str(e)) from None
+    costs.record(db, access.project.organisation_id, access.project.id, "model_answers",
+                 input_tokens=ans.usage.get("input_tokens", 0), output_tokens=ans.usage.get("output_tokens", 0),
+                 detail={"model": ans.model})
     prov = {"name": ans.provider, "model": ans.model, "adapter": ADAPTER_VERSION, "request_id": ans.request_id,
             "usage": ans.usage, "served_by_fallback": ans.served_by_fallback, "stop_reason": ans.stop_reason}
     if ans.refusal is not None:

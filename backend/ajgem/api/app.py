@@ -38,7 +38,7 @@ from ..models import (
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import deletion, processing, projects, queries, records, uploads
+from ..services import costs, deletion, processing, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
@@ -154,7 +154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": pid, "name": a.project.name, "roles": sorted(a.roles), "llm": llm, "config": None if cfg is None else {
             "revision": cfg.revision, "boundary": cfg.boundary, "working_crs": cfg.working_crs,
             "analyte_policy": cfg.analyte_policy, "retention_policy": cfg.retention_policy,
-            "provider_policy": cfg.provider_policy or {},
+            "provider_policy": cfg.provider_policy or {}, "cost_policy": cfg.cost_policy or {},
             "created_by": cfg.created_by, "created_at": cfg.created_at.isoformat()}}
 
     @app.put("/projects/{pid}/config")
@@ -234,6 +234,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def retry_job(jid: str, body: S.RetryIn, s: Session = Depends(db), p: Principal = Depends(principal)):
         a, _ = via(Job, jid, s, p)
         return processing.job_view(processing.retry(s, ctx, a, jid, body.units))
+
+    @app.post("/jobs/{jid}/budget-override")
+    def budget_override(jid: str, body: S.BudgetOverride, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(Job, jid, s, p, "project.manage")
+        return processing.job_view(processing.approve_over_budget(s, ctx, a, jid, body.reason))
+
+    @app.get("/projects/{pid}/usage")
+    def project_usage(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a = project_access(s, p, pid, "project.manage")
+        return costs.status(s, a)
 
     @app.post("/jobs/{jid}/cancel")
     def cancel_job(jid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
@@ -442,6 +452,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def download(eid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
         a, _ = via(Export, eid, s, p)
         e = exports_svc.download_export(s, a, eid)
+        costs.record(s, a.project.organisation_id, a.project.id, "export_bytes", len(e.payload), detail={"export_id": e.id})
         return Response(e.payload, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="export-{e.id}.zip"',
                                  "Cache-Control": "private, no-store"})

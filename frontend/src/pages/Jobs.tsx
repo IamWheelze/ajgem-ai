@@ -31,7 +31,7 @@ export default function Jobs() {
                   <td className="num">{j.attempt}</td>
                   <td>{j.retryable.length || "—"}</td>
                   <td className="faint">{when(j.created_at)}</td>
-                  <td>{["queued", "processing", "partial_failed"].includes(j.state) && can("upload") && <button className="small" onClick={async (e) => { e.stopPropagation(); await api.post(`/jobs/${j.id}/cancel`); jobs.reload(); }}>Cancel</button>}</td>
+                  <td>{["queued", "processing", "partial_failed", "awaiting_budget_approval"].includes(j.state) && can("upload") && <button className="small" onClick={async (e) => { e.stopPropagation(); await api.post(`/jobs/${j.id}/cancel`); jobs.reload(); }}>Cancel</button>}</td>
                 </tr>
               ))}
             </tbody>

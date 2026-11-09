@@ -60,6 +60,8 @@ const STATUS: Record<string, string> = {
   failed: "bad",
   processing: "info",
   queued: "info",
+  awaiting_budget_approval: "warn",
+  budget_exhausted: "warn",
   cancelled: "",
   succeeded: "ok",
   flagged: "warn",

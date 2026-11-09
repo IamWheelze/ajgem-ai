@@ -51,6 +51,8 @@ POLICIES: dict[str, str] = {
     "audit_events": ORG,
     # Tombstones stay readable at organisation level after their project is deleted.
     "deletion_requests": ORG,
+    # Metered usage (counts and tokens, no content): readable organisation-wide for budgets.
+    "usage_events": ORG,
     "job_tasks": "job_id IN (SELECT id FROM jobs)",
 }
 PROJECT_SCOPED = [

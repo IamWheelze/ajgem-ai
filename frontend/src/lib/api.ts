@@ -174,7 +174,12 @@ export interface JobView {
   attempt: number;
   version_id: string | null;
   created_at?: string;
-  manifest: { units?: { unit: string; state: string; attempts: number; candidates: number; issues: Issue[] }[]; summary?: Record<string, number>; partial?: boolean; note?: string };
+  manifest: {
+    units?: { unit: string; state: string; attempts: number; candidates: number; issues: Issue[] }[]; summary?: Record<string, number>; partial?: boolean; note?: string;
+    estimate?: { pages: number; max_ocr_pages: number; model_assisted: boolean };
+    budget?: string[];
+    budget_override?: { by: string; reason: string; at: string };
+  };
   cost_counters: Record<string, number>;
   retryable: string[];
 }
@@ -314,6 +319,7 @@ export interface ProjectDetail {
   config: null | {
     revision: number; boundary: GeoJSON.Polygon | GeoJSON.MultiPolygon | null; working_crs: string | null; created_by: string; created_at: string;
     provider_policy?: { allow_external_llm?: boolean; provider?: string | null; notes?: string };
+    cost_policy?: CostLimits;
   };
 }
 
@@ -340,4 +346,15 @@ export async function fetchRecordsDetailed(pid: string, params: Record<string, u
 
 export async function fetchRecords(pid: string, params: Record<string, unknown> = {}, max = 5000): Promise<RecordView[]> {
   return (await fetchRecordsDetailed(pid, params, max)).records;
+}
+
+export interface CostLimits { monthly_pages?: number | null; monthly_model_tokens?: number | null }
+export interface UsageRow { events: number; quantity: number; input_tokens: number; output_tokens: number }
+export interface UsageStatus {
+  period_start: string;
+  usage: Record<"pages" | "ocr_pages" | "model_extraction" | "model_answers" | "export_bytes", UsageRow>;
+  limits: { project: CostLimits; organisation: CostLimits };
+  used: { project: { monthly_pages: number; monthly_model_tokens: number }; organisation: { monthly_pages: number; monthly_model_tokens: number } };
+  remaining: { project: CostLimits; organisation: CostLimits };
+  storage_bytes: number;
 }

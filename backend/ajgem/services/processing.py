@@ -21,7 +21,7 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import DocumentVersion, Job, JobTask, PageText, SourceAnchor
 from . import audit
-from . import ocr, sandbox
+from . import costs, ocr, sandbox
 from .access import ProjectAccess
 from .answers import provider_permitted
 from .llm import EXTRACTION_ADAPTER_VERSION, InvalidModelOutput, ProviderError, ProviderUnavailable
@@ -68,12 +68,42 @@ def start_pdf_job(db: Session, ctx: Context, access: ProjectAccess, version_id: 
         db.add(JobTask(job_id=job.id, unit_key=f"page:{i:04d}"))
     db.flush()
     audit.record(db, access.principal, "job.create", "job", job.id, project_id=v.project_id, detail={"pages": n})
+    over = costs.page_overrun(db, access, n)
+    estimate = {"pages": n, "max_ocr_pages": n, "model_assisted": provider_permitted(db, access, ctx.answer_provider)
+                if ctx.answer_provider is not None else False}
+    if over:
+        # NF11: an estimate above budget waits for an administrator's recorded override.
+        db.refresh(job)
+        _finish(job, final=False)
+        job.state = "awaiting_budget_approval"
+        job.manifest = {**job.manifest, "estimate": estimate, "budget": over,
+                        "note": "Processing has not started: the page estimate exceeds the monthly budget. A project "
+                                "administrator can approve it with a reason."}
+        return job
     if run and ctx.settings.job_executor == "inline":
         run_job(db, ctx, access, job.id)
     else:
         db.refresh(job)
         _finish(job, final=False)  # a manifest listing the queued units
         job.state = "queued"
+    job.manifest = {**job.manifest, "estimate": estimate}
+    return job
+
+
+def approve_over_budget(db: Session, ctx: Context, access: ProjectAccess, job_id: str, reason: str) -> Job:
+    access.require("project.manage")
+    job = get_job(db, access, job_id)
+    if job.state != "awaiting_budget_approval":
+        raise ApiError("INPUT_INVALID", "This job is not waiting for a budget decision")
+    if len(reason.strip()) < 10:
+        raise ApiError("INPUT_INVALID", "Give a reason of at least 10 characters for processing above budget")
+    job.manifest = {**job.manifest, "budget_override": {"by": access.principal.user_id, "reason": reason.strip(),
+                                                         "at": datetime.now(timezone.utc).isoformat()}}
+    audit.record(db, access.principal, "job.budget_override", "job", job.id, project_id=job.project_id,
+                 detail={"reason": reason.strip(), "estimate": job.manifest.get("estimate"), "budget": job.manifest.get("budget")})
+    job.state = "queued"
+    if ctx.settings.job_executor == "inline":
+        run_job(db, ctx, access, job.id)
     return job
 
 
@@ -127,7 +157,8 @@ def _finish(job: Job, final: bool = True) -> None:
     else:
         job.state = "completed"
     job.updated_at = datetime.now(timezone.utc)
-    job.manifest = {
+    kept = {k: v for k, v in (job.manifest or {}).items() if k in ("estimate", "budget", "budget_override")}
+    job.manifest = {**kept,
         "units": [
             {"unit": t.unit_key, "state": t.state, "attempts": t.attempts, "candidates": t.candidate_count, "issues": t.issues}
             for t in job.tasks
@@ -156,7 +187,7 @@ def retry(db: Session, ctx: Context, access: ProjectAccess, job_id: str, units: 
 def cancel(db: Session, access: ProjectAccess, job_id: str) -> Job:
     access.require("import.run")
     job = get_job(db, access, job_id)
-    if job.state in {"queued", "processing", "partial_failed"}:
+    if job.state in {"queued", "processing", "partial_failed", "awaiting_budget_approval"}:
         job.state = "cancelled"
     return job
 
@@ -268,8 +299,10 @@ def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersio
                                                parsed["label"])
     quality = {**parsed["quality"], "sandbox": {"version": sandbox.SANDBOX_VERSION, "enabled": ctx.settings.parser_sandbox,
                                                 "network_isolated": isolated}}
+    costs.record(db, v.organisation_id, v.project_id, "pages", job_id=task.job_id)
     if quality.get("method") == "ocr":
         _cost(db, task, "ocr_pages")
+        costs.record(db, v.organisation_id, v.project_id, "ocr_pages", job_id=task.job_id)
     pt = db.scalar(select(PageText).where(PageText.version_id == v.id, PageText.page_index == page_index))
     if pt is None:
         db.add(PageText(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id,
@@ -445,6 +478,11 @@ def _model_extraction(db, ctx, access, v, task, lines, matched, anchor_for, head
         return 0, [issue("UNPARSED_TABLE_LINES", "warning", None,
                          f"{len(pending)} line(s) look like assay rows but were not read ({shown}); enter them manually"
                          " or allow model-assisted extraction for this project")], True
+    ok, why = costs.model_tokens_left(db, access)
+    if not ok:
+        return 0, [issue("MODEL_BUDGET_EXHAUSTED", "warning", None,
+                         f"{len(pending)} line(s) need model-assisted extraction ({shown}) but {why[0].lower() + why[1:]}; "
+                         "enter them manually or retry the page after the budget is raised")], True
     texts = [ln.text for ln in lines]
     feedback, accepted, reasons, runs = None, [], [], []
     for attempt in (1, 2):  # FR08: invalid output is retried once with the reasons, then goes to manual review
@@ -459,6 +497,9 @@ def _model_extraction(db, ctx, access, v, task, lines, matched, anchor_for, head
             runs.append({"attempt": attempt, "error": str(e)})
         else:
             _cost(db, task, "model_pages")
+            costs.record(db, v.organisation_id, v.project_id, "model_extraction", job_id=task.job_id,
+                         input_tokens=ex.usage.get("input_tokens", 0), output_tokens=ex.usage.get("output_tokens", 0),
+                         detail={"model": ex.model})
             runs.append({"attempt": attempt, "model": ex.model, "usage": ex.usage, "request_id": ex.request_id,
                          "served_by_fallback": ex.served_by_fallback, "rows": len(ex.rows)})
             if ex.refusal is not None:
