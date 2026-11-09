@@ -69,6 +69,7 @@ backend/
   tests/            FRD acceptance tests, including the §13 first milestone end to end
 docs/FRD.md         requirements baseline (converted from the supplied .docx)
 docs/TRACEABILITY.md
+docs/OPERATIONS.md  backups, restores, verification and rollback
 ```
 
 ## Running
