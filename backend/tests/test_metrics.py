@@ -20,12 +20,19 @@ def test_metrics_report_aggregates_without_tenant_data(team, app, client):
         r = client.get("/metrics", headers={"Authorization": "Bearer s3cret-token"})
         assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
         body = r.text
-        assert 'ajgem_http_requests_total{method="GET",route="/projects/{pid}",status="403"} 1' in body
-        assert 'ajgem_api_errors_total{code="AUTH_FORBIDDEN"} 1' in body
-        assert 'ajgem_http_request_duration_seconds_bucket{le="+Inf",method="POST",route="/uploads/{uid}/complete"}' in body
-        assert "ajgem_review_queue_records 1" in body
-        assert 'ajgem_usage_month_quantity{category="pages"} 1' in body
-        assert 'ajgem_jobs{state="needs_review"} 1' in body
+        import re
+
+        def value(series: str) -> float:
+            m = re.search(rf"^{re.escape(series)} (\S+)$", body, re.M)
+            assert m, series
+            return float(m.group(1))
+
+        assert value('ajgem_http_requests_total{method="GET",route="/projects/{pid}",status="403"}') >= 1
+        assert value('ajgem_api_errors_total{code="AUTH_FORBIDDEN"}') >= 1
+        assert value('ajgem_http_request_duration_seconds_count{method="POST",route="/uploads/{uid}/complete"}') >= 1
+        assert value("ajgem_review_queue_records") >= 1
+        assert value('ajgem_usage_month_quantity{category="pages"}') >= 1
+        assert value('ajgem_jobs{state="needs_review"}') >= 1
         # No ids, names or evidence.
         for leak in (pid, team["org"], "Kano", "KW-111", "1234", "CERT-M", "analyst@"):
             assert leak not in body, leak

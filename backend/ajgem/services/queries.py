@@ -11,7 +11,7 @@ import re
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..errors import ApiError
@@ -21,16 +21,10 @@ from ..science.qualified import QUERY_OPS, Comparator, Outcome, QualifiedValue, 
 from ..science.units import UNIT_REGISTRY_VERSION, UnitError, convert, normalise_basis, normalise_unit
 from .access import ProjectAccess
 from .projects import registry_for
-from .records import revision
+from .records import RevisionRow, revision, revision_rows, with_revisions
 
 THRESHOLD_TOOL = ("assay_threshold", "1.0.0")
 CENSORING_POLICY = "three-valued interval comparison; censored values are never substituted"
-
-
-def _approved_assays(db: Session, project_id: str) -> list[Record]:
-    return list(db.scalars(select(Record).where(Record.project_id == project_id, Record.kind == "assay",
-                                                Record.approved_revision_no.is_not(None))
-                           .order_by(Record.sample_key, Record.id)))
 
 
 def _conflict_state(db: Session, project_id: str) -> dict[str, dict]:
@@ -42,15 +36,23 @@ def _conflict_state(db: Session, project_id: str) -> dict[str, dict]:
     return out
 
 
-def _sample_locations(db: Session, project_id: str) -> dict[str, dict]:
-    out = {}
-    for s in db.scalars(select(Record).where(Record.project_id == project_id, Record.kind == "sample",
-                                             Record.approved_revision_no.is_not(None))):
-        rev = revision(db, s, s.approved_revision_no)
-        out.setdefault(s.sample_key, {"record_id": s.id, "mapped": rev.lon is not None,
-                                      "lon": str(rev.lon) if rev.lon is not None else None,
-                                      "lat": str(rev.lat) if rev.lat is not None else None})
+def _mapped_samples(db: Session, project_id: str) -> dict[str, bool]:
+    """sample_key -> whether its approved sample has map coordinates (no coordinates are decoded)."""
+    rows = db.connection().execute(
+        select(Record.sample_key, and_(RecordRevision.lon.is_not(None), RecordRevision.lat.is_not(None)))
+        .join(RecordRevision, and_(RecordRevision.record_id == Record.id,
+                                   RecordRevision.revision_no == Record.approved_revision_no))
+        .where(Record.project_id == project_id, Record.kind == "sample", Record.approved_revision_no.is_not(None))
+        .order_by(Record.sample_key, Record.id))
+    out: dict[str, bool] = {}
+    for key, mapped in rows:
+        out.setdefault(key, bool(mapped))
     return out
+
+
+# Revision fields the threshold tool reads; the database extracts only these (NF09).
+THRESHOLD_FIELDS = ("analyte", "result_raw", "comparator", "value", "unit", "basis", "method", "sample_id",
+                    "certificate_number")
 
 
 def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen: dict | None = None,
@@ -80,23 +82,37 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
     sample_filter = set(params.get("sample_keys") or []) or None
 
     if frozen is None:
-        records = _approved_assays(db, access.project.id)
-        inputs = {"revisions": [], "conflicts": _conflict_state(db, access.project.id)}
-        revs = []
-        for r in records:
-            rev = revision(db, r, r.approved_revision_no)
-            revs.append((r, rev))
-            inputs["revisions"].append({"record_id": r.id, "revision_id": rev.id, "revision_no": rev.revision_no})
+        revs = revision_rows(db, access.project.id, "assay", THRESHOLD_FIELDS)
+        inputs = {"revisions": [{"record_id": r.id, "revision_id": rv.id, "revision_no": rv.revision_no} for r, rv in revs],
+                  "conflicts": _conflict_state(db, access.project.id)}
     else:
         inputs = frozen
+        ids = [item["revision_id"] for item in frozen["revisions"]]
+        by_id: dict[str, tuple] = {}
+        for k in range(0, len(ids), 1000):  # batched: a frozen snapshot can name every approved result
+            for r, rv in db.execute(select(Record, RecordRevision).join(RecordRevision, RecordRevision.record_id == Record.id)
+                                    .where(RecordRevision.id.in_(ids[k:k + 1000]))):
+                by_id[rv.id] = (r, rv)
         revs = []
-        for item in frozen["revisions"]:
-            rev = db.get(RecordRevision, item["revision_id"])
-            revs.append((db.get(Record, item["record_id"]), rev))
+        for i in ids:  # the same field shape as a fresh run, so re-runs compare like with like
+            r, rv = by_id.get(i, (None, None))
+            if rv is not None:
+                rv = RevisionRow(rv.id, rv.revision_no, {k: None if rv.data.get(k) is None else str(rv.data[k])
+                                                         for k in THRESHOLD_FIELDS}, rv.anchor_ids or [])
+            revs.append((r, rv))
     conflicts = inputs["conflicts"]
 
     element = q_analyte.element
-    candidates = [(r, rv) for r, rv in revs if rv is not None and _same_element(reg, rv.data.get("analyte"), element)]
+    same: dict[str | None, bool] = {}  # per analyte code, not per row (NF09)
+    candidates = []
+    for r, rv in revs:
+        if rv is None:
+            continue
+        code = rv.data.get("analyte")
+        if code not in same:
+            same[code] = _same_element(reg, code, element)
+        if same[code]:
+            candidates.append((r, rv))
     if sample_filter is not None:
         candidates = [(r, rv) for r, rv in candidates if r.sample_key in sample_filter]
     bases = {rv.data.get("basis") or "unspecified" for _, rv in candidates}
@@ -106,6 +122,8 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
 
     rows, exclusions = [], []
     factors_used: dict[str, Any] = {}
+    analyte_of: dict[str, Any] = {}
+    unit_factor: dict[str, Decimal] = {}
     for r, rv in candidates:
         d = rv.data
         ref = {"record_id": r.id, "revision_id": rv.id, "revision_no": rv.revision_no, "sample_id": d.get("sample_id"),
@@ -130,10 +148,12 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
         except (KeyError, TypeError, ValueError):
             exclusions.append(dict(ref, reason="RESULT_NOT_NUMERIC"))
             continue
-        rec_analyte = reg.get(d["analyte"])
+        rec_analyte = analyte_of.get(d["analyte"]) or analyte_of.setdefault(d["analyte"], reg.get(d["analyte"]))
         try:
             if rec_analyte.code == q_analyte.code:
-                in_unit = qv.scaled(convert(Decimal(1), d["unit"], q_unit))
+                if d["unit"] not in unit_factor:
+                    unit_factor[d["unit"]] = convert(Decimal(1), d["unit"], q_unit)  # once per unit, not per row
+                in_unit = qv.scaled(unit_factor[d["unit"]])
                 derived = None
             elif rec_analyte.kind == "element" and q_analyte.kind == "oxide":
                 eq = oxide_equivalent(reg, Decimal(1), rec_analyte.code, q_analyte.code, places=6)
@@ -168,11 +188,10 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
                 "rounding": eq["rounding"], "note": eq["note"],
             }
         rows.append(row)
-    locs = _sample_locations(db, access.project.id)
+    mapped = _mapped_samples(db, access.project.id)
+    key_of = {r.id: r.sample_key for r, _ in revs if r is not None}
     for row in rows:
-        r = db.get(Record, row["record_id"])
-        loc = locs.get(r.sample_key)
-        row["mapped"] = bool(loc and loc["mapped"])
+        row["mapped"] = mapped.get(key_of.get(row["record_id"]), False)
     counts = {o.value: sum(1 for r in rows if r["outcome"] == o.value) for o in Outcome}
     result = {
         "tool": THRESHOLD_TOOL[0], "tool_version": THRESHOLD_TOOL[1],
@@ -220,9 +239,7 @@ def _describe(q: dict) -> str:
 def missing_coordinates(db: Session, access: ProjectAccess) -> dict:
     access.require("query.run")
     rows = []
-    for s in db.scalars(select(Record).where(Record.project_id == access.project.id, Record.kind == "sample",
-                                             Record.approved_revision_no.is_not(None)).order_by(Record.sample_key)):
-        rev = revision(db, s, s.approved_revision_no)
+    for s, rev in with_revisions(db, access.project.id, "sample"):
         if rev.lon is None:
             d = rev.data
             reason = ("COORD_MISSING" if not (d.get("raw_x") and d.get("raw_y"))
@@ -235,8 +252,8 @@ def missing_coordinates(db: Session, access: ProjectAccess) -> dict:
 def methods_and_units(db: Session, access: ProjectAccess) -> dict:
     access.require("query.run")
     groups: dict[tuple, dict] = {}
-    for r in _approved_assays(db, access.project.id):
-        d = revision(db, r, r.approved_revision_no).data
+    for r, rv in with_revisions(db, access.project.id, "assay"):
+        d = rv.data
         k = (d.get("analyte"), d.get("method"), d.get("unit"), d.get("laboratory"))
         g = groups.setdefault(k, {"analyte": k[0], "method": k[1], "unit": k[2], "laboratory": k[3], "count": 0,
                                   "record_ids": []})
@@ -285,16 +302,15 @@ def search(db: Session, access: ProjectAccess, q: str, limit: int = 20) -> dict:
         rev = revision(db, r) if drafts else revision(db, r, r.approved_revision_no)
         exact.append({"record_id": r.id, "kind": r.kind, "status": r.status, "sample_id": rev.data.get("sample_id"),
                       "match": "sample_id"})
-    for r in db.scalars(select(Record).where(Record.project_id == access.project.id,
-                                             Record.kind.in_(["certificate", "assay"])).limit(5000)):
-        if not drafts and r.approved_revision_no is None:
-            continue
-        rev = revision(db, r) if drafts else revision(db, r, r.approved_revision_no)
-        if (rev.data.get("certificate_number") or "").upper() == q.upper():
-            exact.append({"record_id": r.id, "kind": r.kind, "status": r.status,
-                          "certificate_number": rev.data.get("certificate_number"), "match": "certificate_number"})
-            if len(exact) >= limit:
-                break
+    no = Record.current_revision_no if drafts else Record.approved_revision_no
+    cert = func.upper(RecordRevision.data["certificate_number"].as_string())
+    stmt = (select(Record, RecordRevision)
+            .join(RecordRevision, and_(RecordRevision.record_id == Record.id, RecordRevision.revision_no == no))
+            .where(Record.project_id == access.project.id, Record.kind.in_(["certificate", "assay"]), cert == q.upper())
+            .order_by(Record.kind.desc(), Record.id).limit(max(0, limit - len(exact))))
+    for r, rev in db.execute(stmt):  # filtered in the database, so every record is searched, not a first batch
+        exact.append({"record_id": r.id, "kind": r.kind, "status": r.status,
+                      "certificate_number": rev.data.get("certificate_number"), "match": "certificate_number"})
     text_hits = []
     for pt in db.scalars(select(PageText).where(PageText.project_id == access.project.id,
                                                 PageText.text.ilike(f"%{_escape_like(q)}%", escape="\\")).limit(limit)):
@@ -322,30 +338,50 @@ def _escape_like(s: str) -> str:
 # --------------------------------------------------------------- map features
 def features(db: Session, access: ProjectAccess, bbox: list[float] | None = None) -> dict:
     access.require("query.run")
-    feats, unmapped = [], 0
-    assays: dict[str, list[dict]] = {}
-    for r in _approved_assays(db, access.project.id):
-        d = revision(db, r, r.approved_revision_no).data
-        assays.setdefault(r.sample_key, []).append({"record_id": r.id, "analyte": d.get("analyte"),
-                                                    "result_raw": d.get("result_raw"), "unit": d.get("unit"),
-                                                    "censored": d.get("comparator") not in (None, "EQ")})
-    for s in db.scalars(select(Record).where(Record.project_id == access.project.id, Record.kind == "sample",
-                                             Record.approved_revision_no.is_not(None)).order_by(Record.sample_key)):
-        rev = revision(db, s, s.approved_revision_no)
-        if rev.lon is None or rev.lat is None:
+    pid = access.project.id
+    approved = and_(RecordRevision.record_id == Record.id, RecordRevision.revision_no == Record.approved_revision_no)
+    f = RecordRevision.data
+    # Samples first, with only the columns a map point needs; the bbox is applied before any assay is read.
+    samples = db.execute(
+        select(Record.id, Record.sample_key, RecordRevision.id, RecordRevision.lon, RecordRevision.lat,
+               f["sample_id"].as_string(), f["campaign"].as_string(), f["uncertainty_m"].as_string(),
+               RecordRevision.transform, RecordRevision.anchor_ids)
+        .join(RecordRevision, approved)
+        .where(Record.project_id == pid, Record.kind == "sample", Record.approved_revision_no.is_not(None))
+        .order_by(Record.sample_key, Record.id)).all()
+    unmapped, points = 0, []
+    for row in samples:
+        lon, lat = row[3], row[4]
+        if lon is None or lat is None:
             unmapped += 1  # never placed at (0, 0)
             continue
-        lon, lat = float(rev.lon), float(rev.lat)
+        lon, lat = float(lon), float(lat)
         if bbox and not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
             continue
-        a = assays.get(s.sample_key, [])
+        points.append((row, lon, lat))
+    keys = {row[1] for row, _, _ in points}
+    assays: dict[str, list[dict]] = {}
+    if keys:
+        q = (select(Record.id, Record.sample_key, f["analyte"].as_string(), f["result_raw"].as_string(),
+                    f["unit"].as_string(), f["comparator"].as_string())
+             .join(RecordRevision, approved)
+             .where(Record.project_id == pid, Record.kind == "assay", Record.approved_revision_no.is_not(None))
+             .order_by(Record.sample_key, Record.id))
+        if bbox:  # a small window: fetch only its samples' assays
+            q = q.where(Record.sample_key.in_(keys)) if len(keys) <= 5000 else q
+        for rid, key, analyte, raw, unit, comp in db.execute(q):
+            if key in keys:
+                assays.setdefault(key, []).append({"record_id": rid, "analyte": analyte, "result_raw": raw, "unit": unit,
+                                                   "censored": comp not in (None, "EQ")})
+    feats = []
+    for (rid, key, vid, _, _, sample_id, campaign, unc, transform, anchors), lon, lat in points:
+        a = assays.get(key, [])
         feats.append({
-            "type": "Feature", "id": s.id,
+            "type": "Feature", "id": rid,
             "geometry": {"type": "Point", "coordinates": [lon, lat]},
-            "properties": {"record_id": s.id, "revision_id": rev.id, "sample_id": rev.data.get("sample_id"),
-                           "sample_key": s.sample_key, "campaign": rev.data.get("campaign"),
-                           "uncertainty_m": rev.data.get("uncertainty_m"), "transform": rev.transform,
-                           "assays": a, "any_censored": any(x["censored"] for x in a), "anchor_ids": rev.anchor_ids},
+            "properties": {"record_id": rid, "revision_id": vid, "sample_id": sample_id, "sample_key": key,
+                           "campaign": campaign, "uncertainty_m": unc, "transform": transform, "assays": a,
+                           "any_censored": any(x["censored"] for x in a), "anchor_ids": anchors or []},
         })
     return {"type": "FeatureCollection", "features": feats, "unmapped_count": unmapped}
 
@@ -391,21 +427,56 @@ def _run_tool(db, access, tool, params, question):
     raise ApiError("INPUT_UNSUPPORTED", f"Tool '{tool}' is not on the allowlist")
 
 
+ROWS_IN_RESPONSE = 1000
+
+
+def page_of(result: dict, limit: int = ROWS_IN_RESPONSE) -> dict:
+    """The result as sent to a client: at most `limit` rows and exclusions, with totals (NF09).
+
+    The frozen snapshot keeps every row; `GET /answers/{id}/rows` pages through the rest. Counts are always complete.
+    """
+    out = dict(result)
+    for part in ("rows", "exclusions"):
+        items = result.get(part)
+        if isinstance(items, list) and len(items) > limit:
+            out[part] = items[:limit]
+            out[f"{part}_total"] = len(items)
+            out[f"{part}_truncated"] = True
+    return out
+
+
+def rows_page(result: dict, part: str, outcome: str | None, offset: int, limit: int) -> dict:
+    if part not in ("rows", "exclusions"):
+        raise ApiError("INPUT_INVALID", "part must be rows or exclusions")
+    items = result.get(part) or []
+    if outcome:
+        items = [r for r in items if r.get("outcome") == outcome]
+    return {"part": part, "outcome": outcome, "offset": offset, "total": len(items),
+            "items": items[offset: offset + limit]}
+
+
 def _wrap(result: dict, db: Session) -> dict:
     """Separate source statements from calculations; every citation must resolve."""
     rows = result.get("rows", [])
     anchor_ids = sorted({a for r in rows for a in r.get("anchor_ids", [])})
-    found = {a.id for a in db.scalars(select(SourceAnchor).where(SourceAnchor.id.in_(anchor_ids)))} if anchor_ids else set()
+    found: set[str] = set()
+    for k in range(0, len(anchor_ids), 1000):  # every citation is checked, in batches
+        found |= set(db.scalars(select(SourceAnchor.id).where(SourceAnchor.id.in_(anchor_ids[k:k + 1000]))))
     missing = sorted(set(anchor_ids) - found)
+    shown = page_of(result)
+    page = shown.get("rows", [])
     return {
         "kind": "structured",
         "answer_id": result.get("answer_id"),
         "state": result.get("state"),
         "source_statements": [{"record_id": r.get("record_id"), "statement": r.get("result_raw") or r.get("sample_id"),
-                               "anchor_ids": r.get("anchor_ids", [])} for r in rows],
-        "calculations": [result] if result.get("tool") == "assay_threshold" else [],
+                               "anchor_ids": r.get("anchor_ids", [])} for r in page],
+        "calculations": [{k: v for k, v in shown.items() if k not in ("rows", "exclusions")}]
+        if result.get("tool") == "assay_threshold" else [],
         "interpretations": [],
-        "result": result,
-        "citations": {"anchor_ids": anchor_ids, "unresolved": missing, "supported": not missing},
+        "result": shown,
+        # Every citation is checked; the id list covers the rows in this response.
+        "citations": {"count": len(anchor_ids), "unresolved": missing, "supported": not missing,
+                      "anchor_ids": sorted({a for r in page for a in r.get("anchor_ids", [])})},
         "insufficient_evidence": not rows,
     }

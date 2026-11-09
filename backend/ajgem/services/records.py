@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Text, and_, cast, select
 from sqlalchemy.orm import Session
 
 from ..errors import ApiError
@@ -256,6 +257,63 @@ def revision(db: Session, record: Record, no: int | None = None) -> RecordRevisi
     return rev
 
 
+def with_revisions(db: Session, project_id: str, kind: str | None = None, *, approved: bool = True):
+    """(record, revision) pairs in one query: the approved revision, or the current one when approved=False.
+
+    Replaces a revision lookup per record, which dominated query time at pilot scale (NF09).
+    """
+    no = Record.approved_revision_no if approved else Record.current_revision_no
+    q = (select(Record, RecordRevision)
+         .join(RecordRevision, and_(RecordRevision.record_id == Record.id, RecordRevision.revision_no == no))
+         .where(Record.project_id == project_id))
+    if kind:
+        q = q.where(Record.kind == kind)
+    if approved:
+        q = q.where(Record.approved_revision_no.is_not(None))
+    return db.execute(q.order_by(Record.sample_key, Record.id)).all()
+
+
+@dataclass(slots=True)
+class RecordRow:
+    """The few record columns read-heavy queries need, without ORM instances (NF09)."""
+    id: str
+    sample_key: str | None
+    stale: bool
+
+
+@dataclass(slots=True)
+class RevisionRow:
+    id: str
+    revision_no: int
+    data: dict
+    anchor_ids: list
+
+
+def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ...]) -> list[tuple[RecordRow, RevisionRow]]:
+    """Approved (record, revision) pairs as plain rows, for read-heavy queries at pilot scale (NF09).
+
+    One query, run outside the ORM and its type processing. Each revision document is fetched once as text and
+    parsed once (a `json` column is re-parsed by PostgreSQL for every field extracted, which was slower).
+    `RevisionRow.data` holds just the named `fields`, as text.
+    """
+    import json
+
+    q = (select(Record.id, Record.sample_key, Record.stale, RecordRevision.id, RecordRevision.revision_no,
+                cast(RecordRevision.anchor_ids, Text), cast(RecordRevision.data, Text))
+         .join(RecordRevision, and_(RecordRevision.record_id == Record.id,
+                                    RecordRevision.revision_no == Record.approved_revision_no))
+         .where(Record.project_id == project_id, Record.kind == kind, Record.approved_revision_no.is_not(None))
+         .order_by(Record.sample_key, Record.id))
+    out = []
+    for row in db.connection().execute(q):
+        rid, key, stale, vid, no, anchors, doc = row
+        full = json.loads(doc) if doc else {}
+        data = {k: (None if full.get(k) is None else str(full[k])) for k in fields}
+        out.append((RecordRow(rid, key, bool(stale)),
+                    RevisionRow(vid, no, data, json.loads(anchors) if anchors and anchors != "[]" else [])))
+    return out
+
+
 def get_record(db: Session, access: ProjectAccess, record_id: str) -> Record:
     rec = db.get(Record, record_id)
     if rec is None or rec.project_id != access.project.id:
@@ -265,8 +323,8 @@ def get_record(db: Session, access: ProjectAccess, record_id: str) -> Record:
     return rec
 
 
-def record_view(db: Session, rec: Record, include_drafts: bool = True) -> dict:
-    cur = revision(db, rec)
+def record_view(db: Session, rec: Record, include_drafts: bool = True, shown_revision: RecordRevision | None = None) -> dict:
+    """`shown_revision` may be passed when the caller already loaded it (the current one, or the approved one)."""
     out: dict[str, Any] = {
         "id": rec.id,
         "kind": rec.kind,
@@ -276,7 +334,12 @@ def record_view(db: Session, rec: Record, include_drafts: bool = True) -> dict:
         "approved_revision_no": rec.approved_revision_no,
         "source_version_id": rec.source_version_id,
     }
-    shown = cur if include_drafts else (revision(db, rec, rec.approved_revision_no) if rec.approved_revision_no else None)
+    if shown_revision is not None:
+        shown = shown_revision
+    elif include_drafts:
+        shown = revision(db, rec)
+    else:
+        shown = revision(db, rec, rec.approved_revision_no) if rec.approved_revision_no else None
     if shown:
         out.update(
             revision_id=shown.id,

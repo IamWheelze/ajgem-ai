@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 
 import hmac
+import json
 import logging
 import time
 import uuid
@@ -13,7 +15,7 @@ from collections.abc import Iterator
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..context import Context, Settings
@@ -47,6 +49,19 @@ from ..services.access import Principal, ProjectAccess, accessible_project_ids, 
 from . import schemas as S
 
 log = logging.getLogger(__name__)
+
+
+def _json_default(o):
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()  # as FastAPI's encoder would
+    if isinstance(o, Decimal):
+        return str(o)  # exact, never a float
+    raise TypeError(f"{type(o).__name__} is not JSON serialisable")
+
+
+def fast_json(content) -> Response:
+    """Serialise large read results directly, skipping FastAPI's per-value jsonable_encoder walk (NF09)."""
+    return Response(json.dumps(content, default=_json_default, separators=(",", ":")), media_type="application/json")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -294,7 +309,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dated = date_from is not None or date_to is not None
         sample_dates = records.sample_dates(s, pid, drafts) if dated else {}
         date_excluded = {"undated": 0, "uncertain": 0}
-        q = select(Record).where(Record.project_id == pid).order_by(Record.id)
+        # One query: each record with the revision this user may see, filtered in the database (NF09).
+        shown_no = Record.current_revision_no if drafts else Record.approved_revision_no
+        q = (select(Record, RecordRevision)
+             .join(RecordRevision, and_(RecordRevision.record_id == Record.id, RecordRevision.revision_no == shown_no))
+             .where(Record.project_id == pid).order_by(Record.id))
         if kind:
             q = q.where(Record.kind == kind)
         if status:
@@ -303,21 +322,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             q = q.where(Record.approved_revision_no.is_not(None))
         if cursor:
             q = q.where(Record.id > cursor)
+        for field_name, wanted in (("analyte", analyte), ("laboratory", laboratory), ("campaign", campaign),
+                                   ("method", method)):
+            if wanted:
+                q = q.where(RecordRevision.data[field_name].as_string() == wanted)
+        if missing_coordinates is not None:
+            unplaced = or_(RecordRevision.lon.is_(None), RecordRevision.lat.is_(None))
+            q = q.where(Record.kind == "sample", unplaced if missing_coordinates else ~unplaced)
+        if not dated:
+            q = q.limit(limit)
         out = []
-        for r in s.scalars(q):
-            v = records.record_view(s, r, include_drafts=drafts)
+        for r, rev in s.execute(q):
+            v = records.record_view(s, r, include_drafts=drafts, shown_revision=rev)
             d = v.get("data") or {}
-            if analyte and d.get("analyte") != analyte:
-                continue
-            if laboratory and d.get("laboratory") != laboratory:
-                continue
-            if campaign and d.get("campaign") != campaign:
-                continue
-            if method and d.get("method") != method:
-                continue
-            if missing_coordinates is not None:
-                if r.kind != "sample" or (v.get("geometry") is None) != missing_coordinates:
-                    continue
             if dated:
                 verdict = records.date_in_range(records.record_date(r, d, sample_dates), date_from, date_to)
                 if verdict != "yes":
@@ -395,12 +412,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 assert len(box) == 4
             except (ValueError, AssertionError):
                 raise ApiError("INPUT_INVALID", "bbox must be minLon,minLat,maxLon,maxLat") from None
-        return queries.features(s, project_access(s, p, pid), box)
+        return fast_json(queries.features(s, project_access(s, p, pid), box))
 
     @app.post("/projects/{pid}/questions")
     def ask(pid: str, body: S.QuestionIn, s: Session = Depends(db), p: Principal = Depends(principal)):
-        return queries.ask(s, project_access(s, p, pid), body.question, body.tool, body.params,
-                           provider=ctx.answer_provider)
+        return fast_json(queries.ask(s, project_access(s, p, pid), body.question, body.tool, body.params,
+                                     provider=ctx.answer_provider))
 
     @app.get("/answers/{aid}")
     def get_answer(aid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
@@ -408,15 +425,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         a, _ = via(AnswerSnapshot, aid, s, p)
         snap = queries.get_snapshot(s, a, aid)
-        return {"id": snap.id, "state": snap.state, "stale_reason": snap.stale_reason, "question": snap.question,
-                "params": snap.params, "result": snap.result, "created_at": snap.created_at.isoformat()}
+        return fast_json({"id": snap.id, "state": snap.state, "stale_reason": snap.stale_reason, "question": snap.question,
+                          "params": snap.params, "result": queries.page_of(snap.result or {}),
+                          "created_at": snap.created_at.isoformat()})
+
+    @app.get("/answers/{aid}/rows")
+    def answer_rows(aid: str, part: str = "rows", outcome: str | None = None, offset: int = Query(default=0, ge=0),
+                    limit: int = Query(default=1000, ge=1, le=5000), s: Session = Depends(db),
+                    p: Principal = Depends(principal)):
+        """Page through a frozen answer's rows or exclusions (responses carry the first 1000)."""
+        from ..models import AnswerSnapshot
+
+        a, _ = via(AnswerSnapshot, aid, s, p)
+        snap = queries.get_snapshot(s, a, aid)
+        return fast_json(queries.rows_page(snap.result or {}, part, outcome, offset, limit))
 
     @app.post("/answers/{aid}/rerun")
     def rerun(aid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
         from ..models import AnswerSnapshot
 
         a, _ = via(AnswerSnapshot, aid, s, p)
-        return queries.rerun_snapshot(s, a, aid)
+        out = queries.rerun_snapshot(s, a, aid)
+        return fast_json({**out, "result": queries.page_of(out["result"])})
 
     # ------------------------------------------------------------ sources
     @app.get("/sources/{vid}/anchors/{aid}")

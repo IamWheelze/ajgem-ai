@@ -90,6 +90,33 @@ This processes a synthetic printed scan through the real pipeline: sandbox, Tess
 
 The NF10 target is 100 pages in 30 minutes, so the margin on clean scans is about tenfold. Real scans (skew, stamps, low contrast, handwriting) are slower and less accurate. Repeat the run on the pilot worker profile with a sample of real scans, and record the scan difficulty with the result.
 
+## Query benchmark (NF09)
+
+```bash
+cd backend && python scripts/benchmark_queries.py --assays 100000
+```
+
+Pass `--database-url` and `--database-admin-url` to run it on PostgreSQL. The script loads a synthetic project with 100,000 approved Li assays and 100,000 located samples, then times the calls a user makes, as a project member, over 5 runs.
+
+Results on 2026-11-09: 4-core Intel Xeon @ 2.10 GHz, local PostgreSQL 16 with row-level security on, p95 in seconds.
+
+| Call | Before | After | Target |
+|---|---|---|---|
+| Threshold question ("exceed 1000 ppm Li", 100,000 candidates, about 65,000 matches) | about 50 (extrapolated from 5.1 s at 10,000) | 4.6 (SQLite: 3.4) | 3 |
+| Full map (100,000 points) | about 46 (extrapolated) | 4.4 | 5 (first map results) |
+| Map window (bbox) | about 40 (extrapolated) | 2.0 | 5 |
+| Records page (500) | 2.2 | 0.04 | 3 |
+| Sample-id search | 1.0 at 10,000 | 0.36 | 3 |
+
+The changes behind the "after" column:
+
+- **Batched loading:** revisions are loaded in one join instead of one query per record. Hot paths select only the columns they use and decode each revision document once.
+- **Filtering:** record filters and certificate search run in the database. Certificate search had also been missing matches beyond the first 5,000 records.
+- **Map:** coordinates and the bbox are checked before any assay is read.
+- **Responses:** large results are serialised directly, and long answers return their first 1,000 rows. The rest are paged from the frozen snapshot with `GET /answers/{id}/rows`.
+
+The threshold question is still above its 3 s target in this worst case, where every result is the queried analyte. The remaining time is about one third fetching and decoding rows, one third the exact-decimal comparison per row, and one third writing the frozen snapshot. Repeat on the pilot database server: managed PostgreSQL on its own host behaves differently from this shared 4-core machine.
+
 ## Monitoring
 
 Set `AJGEM_METRICS_TOKEN` and scrape `GET /api/metrics` (or `/metrics` when the API is served on its own) with `Authorization: Bearer <token>`. The output is in the Prometheus text format. It holds aggregates only: request counts and latency by route template, API error codes, the review queue, jobs and pages by state, and this month's metered usage. It never includes tenant names, ids, evidence or prompts. `GET /health` reports whether the database and the malware scanner are answering; use it for liveness and readiness probes.

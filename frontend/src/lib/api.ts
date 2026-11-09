@@ -225,7 +225,10 @@ export interface ToolResult {
   query?: { analyte: string; op: string; threshold: string; unit: string; basis: string | null };
   counts?: Record<Outcome, number>;
   rows: (ThresholdRow & Record<string, unknown>)[];
+  rows_total?: number;
+  rows_truncated?: boolean;
   exclusions?: Exclusion[];
+  exclusions_total?: number;
   calculation?: Record<string, unknown>;
   unmapped_matching_samples?: number;
   deletion_notice?: { message: string; deletion_request_id: string };
@@ -242,7 +245,7 @@ export interface StructuredAnswer {
   calculations: ToolResult[];
   interpretations: unknown[];
   result: ToolResult;
-  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean };
+  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean; count?: number };
   insufficient_evidence: boolean;
 }
 export interface SearchResult {
@@ -275,7 +278,7 @@ export interface NarrativeAnswer {
   notice: string;
   message: string | null;
   deletion_notice?: { message: string; deletion_request_id: string };
-  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean };
+  citations: { anchor_ids: string[]; unresolved: string[]; supported: boolean; count?: number };
   search?: SearchResult;
 }
 export type Answer = StructuredAnswer | RetrievalAnswer | NarrativeAnswer;
