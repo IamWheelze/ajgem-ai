@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from ..errors import ApiError
 from ..models import AnswerSnapshot, ConflictGroup, Record, RecordRevision
+from ..science.dates import DateIssue, parse_date
+from ..science.dates import interval as date_interval
 from ..science import crs as crs_mod
 from ..science.analytes import AnalyteRegistry, UnknownAnalyte
 from ..science.geometry import point_in_boundary
@@ -21,13 +23,15 @@ from . import audit
 from .access import ProjectAccess
 from .projects import current_config, registry_for
 
-VALIDATION_RULES_VERSION = "rules-2026.11.0"
+VALIDATION_RULES_VERSION = "rules-2026.11.1"
 
 SAMPLE_FIELDS = {
-    "sample_id", "campaign", "sample_type", "collection_date", "raw_x", "raw_y", "source_crs",
+    "sample_id", "campaign", "sample_type", "collection_date", "collection_date_iso", "raw_x", "raw_y", "source_crs",
     "axis_order", "crs_confirmed", "uncertainty_m", "positioning_method",
 }
-CERTIFICATE_FIELDS = {"certificate_number", "laboratory", "issue_date", "revision_label", "methods"}
+CERTIFICATE_FIELDS = {"certificate_number", "laboratory", "issue_date", "issue_date_iso", "revision_label", "methods"}
+# Derived by validation from the raw date text; never taken from input.
+DATE_FIELDS = {"sample": ("collection_date", "collection_date_iso"), "certificate": ("issue_date", "issue_date_iso")}
 ASSAY_FIELDS = {
     "sample_id", "campaign", "certificate_number", "laboratory", "analyte", "result_raw", "unit",
     "basis", "method", "detection_limit", "detection_limit_unit", "comparator", "value",
@@ -128,7 +132,57 @@ def validate(kind: str, data: dict, registry: AnalyteRegistry, boundary: dict | 
             issues.append(issue("CERTIFICATE_NUMBER_MISSING", "critical", "certificate_number", "Certificate number missing"))
         if not d.get("laboratory"):
             issues.append(issue("LABORATORY_MISSING", "warning", "laboratory", "Laboratory not identified"))
+    if kind in DATE_FIELDS:
+        raw_f, iso_f = DATE_FIELDS[kind]
+        d[iso_f] = None
+        try:
+            pd = parse_date(d.get(raw_f))
+            if pd:
+                d[iso_f] = pd.iso
+                for w in pd.warnings:
+                    msg = {"DATE_IN_FUTURE": f"Date '{pd.raw}' is in the future",
+                           "DATE_MONTH_FIRST": f"Date '{pd.raw}' was read month-first because its second part is over 12"}[w]
+                    issues.append(issue(w, "warning", raw_f, msg))
+        except DateIssue as e:
+            issues.append(issue(e.code, "warning", raw_f, f"{e}; the date stays unknown"))
     return d, issues
+
+
+def sample_dates(db: Session, project_id: str, include_drafts: bool) -> dict[str, str | None]:
+    """sample_key -> normalised collection date of the sample record (approved revision unless drafts are visible)."""
+    out: dict[str, str | None] = {}
+    for rec in db.scalars(select(Record).where(Record.project_id == project_id, Record.kind == "sample")):
+        no = rec.current_revision_no if include_drafts else rec.approved_revision_no
+        if not no or not rec.sample_key:
+            continue
+        rev = revision(db, rec, no)
+        iso = (rev.data or {}).get("collection_date_iso")
+        # Two sample records with the same key and different dates leave the date unknown, not either one.
+        out[rec.sample_key] = iso if out.get(rec.sample_key, iso) == iso else None
+    return out
+
+
+def record_date(rec: Record, data: dict, sample_dates_: dict[str, str | None]) -> str | None:
+    if rec.kind == "sample":
+        return data.get("collection_date_iso")
+    if rec.kind == "certificate":
+        return data.get("issue_date_iso")
+    return sample_dates_.get(rec.sample_key) if rec.sample_key else None
+
+
+def date_in_range(iso: str | None, date_from, date_to) -> str:
+    """'yes', 'no', 'undated' or 'uncertain' (a month or year that straddles a bound)."""
+    iv = date_interval(iso)
+    if iv is None:
+        return "undated"
+    start, end = iv
+    lo_ok_all, lo_ok_any = (date_from is None or start >= date_from), (date_from is None or end >= date_from)
+    hi_ok_all, hi_ok_any = (date_to is None or end <= date_to), (date_to is None or start <= date_to)
+    if lo_ok_all and hi_ok_all:
+        return "yes"
+    if lo_ok_any and hi_ok_any:
+        return "uncertain"
+    return "no"
 
 
 def _boundary(db: Session, project_id: str) -> dict | None:

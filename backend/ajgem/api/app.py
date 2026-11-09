@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import uuid
 from collections.abc import Iterator
 
@@ -255,10 +257,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/projects/{pid}/records")
     def list_records(pid: str, kind: str | None = None, status: str | None = None, analyte: str | None = None,
                      laboratory: str | None = None, campaign: str | None = None, method: str | None = None,
-                     missing_coordinates: bool | None = None, cursor: str | None = None,
+                     missing_coordinates: bool | None = None, date_from: date | None = None,
+                     date_to: date | None = None, cursor: str | None = None,
                      limit: int = Query(default=100, le=500), s: Session = Depends(db), p: Principal = Depends(principal)):
         a = project_access(s, p, pid)
         drafts = a.can("records.read_drafts")
+        if date_from and date_to and date_from > date_to:
+            raise ApiError("INPUT_INVALID", "date_from is after date_to")
+        dated = date_from is not None or date_to is not None
+        sample_dates = records.sample_dates(s, pid, drafts) if dated else {}
+        date_excluded = {"undated": 0, "uncertain": 0}
         q = select(Record).where(Record.project_id == pid).order_by(Record.id)
         if kind:
             q = q.where(Record.kind == kind)
@@ -283,10 +291,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if missing_coordinates is not None:
                 if r.kind != "sample" or (v.get("geometry") is None) != missing_coordinates:
                     continue
+            if dated:
+                verdict = records.date_in_range(records.record_date(r, d, sample_dates), date_from, date_to)
+                if verdict != "yes":
+                    if verdict in date_excluded:
+                        date_excluded[verdict] += 1
+                    continue
             out.append(v)
             if len(out) >= limit:
                 break
-        return {"records": out, "next_cursor": out[-1]["id"] if len(out) >= limit else None}
+        res = {"records": out, "next_cursor": out[-1]["id"] if len(out) >= limit else None}
+        if dated:
+            # Records the date filter could not place are counted, never silently treated as outside the range.
+            res["date_filter"] = {"from": date_from, "to": date_to, "basis": {
+                "sample": "collection date", "assay": "collection date of its sample", "certificate": "issue date"},
+                "excluded": date_excluded}
+        return res
 
     @app.get("/records/{rid}")
     def get_record(rid: str, s: Session = Depends(db), p: Principal = Depends(principal)):

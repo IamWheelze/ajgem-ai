@@ -318,13 +318,26 @@ export interface ProjectDetail {
 }
 
 /** Page through /records until exhausted (or `max`). */
-export async function fetchRecords(pid: string, params: Record<string, unknown> = {}, max = 5000): Promise<RecordView[]> {
+export interface DateExclusions { undated: number; uncertain: number }
+
+/** All records matching the filters, plus (with date_from/date_to) how many the date filter could not place. */
+export async function fetchRecordsDetailed(pid: string, params: Record<string, unknown> = {}, max = 5000): Promise<{ records: RecordView[]; dateExcluded: DateExclusions | null }> {
   const out: RecordView[] = [];
+  let excluded = null as DateExclusions | null;
   let cursor: string | null = null;
   do {
-    const page: { records: RecordView[]; next_cursor: string | null } = await api.get(`/projects/${pid}/records`, { ...params, limit: 500, cursor });
+    const page: { records: RecordView[]; next_cursor: string | null; date_filter?: { excluded: DateExclusions } } =
+      await api.get(`/projects/${pid}/records`, { ...params, limit: 500, cursor });
     out.push(...page.records);
+    if (page.date_filter) {
+      const e = page.date_filter.excluded;
+      excluded = { undated: (excluded?.undated ?? 0) + e.undated, uncertain: (excluded?.uncertain ?? 0) + e.uncertain };
+    }
     cursor = page.next_cursor;
   } while (cursor && out.length < max);
-  return out;
+  return { records: out, dateExcluded: excluded };
+}
+
+export async function fetchRecords(pid: string, params: Record<string, unknown> = {}, max = 5000): Promise<RecordView[]> {
+  return (await fetchRecordsDetailed(pid, params, max)).records;
 }
