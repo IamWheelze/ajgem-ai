@@ -41,11 +41,12 @@ from ..models import (
     Project,
     Record,
     RecordRevision,
+    Target,
     UploadSession,
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import costs, deletion, processing, projects, queries, records, uploads
+from ..services import costs, deletion, processing, targets, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
@@ -500,6 +501,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(e.payload, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="export-{e.id}.zip"',
                                  "Cache-Control": "private, no-store"})
+
+    # ------------------------------------------------------------ targets and checklists (FR18)
+    @app.get("/projects/{pid}/checklists")
+    def list_checklists(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"checklists": targets.list_checklists(s, project_access(s, p, pid))}
+
+    @app.post("/projects/{pid}/checklists", status_code=201)
+    def create_checklist(pid: str, body: S.ChecklistIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        c = targets.create_checklist(s, project_access(s, p, pid), body.name, [i.model_dump() for i in body.items])
+        return targets.checklist_view(c)
+
+    @app.get("/projects/{pid}/targets")
+    def list_targets(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"targets": targets.list_targets(s, project_access(s, p, pid))}
+
+    @app.post("/projects/{pid}/targets", status_code=201)
+    def create_target(pid: str, body: S.TargetIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        t = targets.create_target(s, project_access(s, p, pid), **body.model_dump())
+        return targets.summary(s, project_access(s, p, pid), t.id)
+
+    @app.get("/targets/{tid}")
+    def get_target(tid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(Target, tid, s, p)
+        return targets.summary(s, a, tid)
+
+    @app.patch("/targets/{tid}")
+    def update_target(tid: str, body: S.TargetUpdate, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(Target, tid, s, p)
+        targets.update_target(s, a, tid, **body.model_dump(exclude_unset=True))
+        return targets.summary(s, a, tid)
+
+    @app.post("/targets/{tid}/evidence", status_code=201)
+    def link_evidence(tid: str, body: S.EvidenceLinkIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(Target, tid, s, p)
+        targets.link_evidence(s, a, tid, **body.model_dump())
+        return targets.summary(s, a, tid)
+
+    @app.delete("/targets/{tid}/evidence/{eid}")
+    def unlink_evidence(tid: str, eid: str, body: S.EvidenceUnlinkIn, s: Session = Depends(db),
+                        p: Principal = Depends(principal)):
+        a, _ = via(Target, tid, s, p)
+        targets.unlink_evidence(s, a, tid, eid, body.reason)
+        return targets.summary(s, a, tid)
+
+    @app.get("/targets/{tid}/samples-inside")
+    def samples_inside(tid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        a, _ = via(Target, tid, s, p)
+        return {"samples": targets.records_inside(s, a, tid)}
 
     # ------------------------------------------------------------ retention & deletion (FR22)
     @app.delete("/versions/{vid}")

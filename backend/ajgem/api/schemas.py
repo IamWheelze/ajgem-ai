@@ -111,6 +111,41 @@ class DeletionIn(Strict):
     confirm: str
 
 
+class ChecklistItemIn(Strict):
+    id: str
+    label: str
+    description: str = ""
+
+
+class ChecklistIn(Strict):
+    name: str
+    items: list[ChecklistItemIn]
+
+
+class TargetIn(Strict):
+    name: str
+    description: str = ""
+    checklist_id: str | None = None
+    geometry: dict | None = None
+
+
+class TargetUpdate(Strict):
+    description: str | None = None
+    checklist_id: str | None = None
+    status: Literal["active", "archived"] | None = None
+
+
+class EvidenceLinkIn(Strict):
+    record_id: str
+    stance: Literal["supporting", "contrary", "context"]
+    note: str = ""
+    checklist_item_ids: list[str] = Field(default_factory=list)
+
+
+class EvidenceUnlinkIn(Strict):
+    reason: str
+
+
 class ExportIn(Strict):
     format: Literal["csv", "geojson", "gpkg"]
     filters: dict[str, Any] = Field(default_factory=dict)

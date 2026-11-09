@@ -432,3 +432,53 @@ class UsageEvent(Base):
     job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = _ts()
+
+
+class Checklist(Base):
+    """FR18: a named, versioned checklist. A version never changes; edits create the next version."""
+
+    __tablename__ = "checklists"
+    __table_args__ = (UniqueConstraint("project_id", "name", "version", name="uq_checklists_version"),)
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer)
+    items: Mapped[list] = mapped_column(JSON, default=list)  # [{"id", "label", "description"}]
+    created_at: Mapped[datetime] = _ts()
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class Target(Base):
+    """FR18: a named exploration target with linked reviewed evidence. Never a resource statement."""
+
+    __tablename__ = "targets"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text, default="")
+    geometry: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # optional Polygon, WGS 84
+    checklist_id: Mapped[str | None] = mapped_column(ForeignKey("checklists.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    created_at: Mapped[datetime] = _ts()
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class TargetEvidence(Base):
+    """A reviewed record linked to a target, frozen at the approved revision it was linked against."""
+
+    __tablename__ = "target_evidence"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    target_id: Mapped[str] = mapped_column(ForeignKey("targets.id"), index=True)
+    record_id: Mapped[str] = mapped_column(ForeignKey("records.id"), index=True)
+    revision_id: Mapped[str] = mapped_column(ForeignKey("record_revisions.id"))
+    stance: Mapped[str] = mapped_column(String(16))  # supporting | contrary | context
+    note: Mapped[str] = mapped_column(Text, default="")
+    checklist_item_ids: Mapped[list] = mapped_column(JSON, default=list)
+    linked_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    linked_at: Mapped[datetime] = _ts()
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    removed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)

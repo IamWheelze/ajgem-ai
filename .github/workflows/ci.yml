@@ -136,6 +136,9 @@ jobs:
       - name: Run milestone walkthrough
         working-directory: frontend
         run: node e2e/milestone.cjs
+      - name: Run targets and checklists walkthrough
+        working-directory: frontend
+        run: node e2e/targets.cjs
       - name: Restart in OIDC mode with the development mock identity provider
         working-directory: backend
         run: |

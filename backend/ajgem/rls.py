@@ -58,6 +58,7 @@ POLICIES: dict[str, str] = {
 PROJECT_SCOPED = [
     "project_config_revisions", "upload_sessions", "documents", "document_versions", "page_texts", "source_anchors",
     "jobs", "import_previews", "records", "record_revisions", "conflict_groups", "answer_snapshots", "exports",
+    "checklists", "targets", "target_evidence",
 ]
 for _t in PROJECT_SCOPED:
     POLICIES[_t] = f"({ORG}) AND {VISIBLE}"
