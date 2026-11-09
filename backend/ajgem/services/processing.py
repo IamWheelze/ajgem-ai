@@ -68,17 +68,24 @@ def start_pdf_job(db: Session, ctx: Context, access: ProjectAccess, version_id: 
         db.add(JobTask(job_id=job.id, unit_key=f"page:{i:04d}"))
     db.flush()
     audit.record(db, access.principal, "job.create", "job", job.id, project_id=v.project_id, detail={"pages": n})
-    if run:
+    if run and ctx.settings.job_executor == "inline":
         run_job(db, ctx, access, job.id)
+    else:
+        db.refresh(job)
+        _finish(job, final=False)  # a manifest listing the queued units
+        job.state = "queued"
     return job
 
 
-def run_job(db: Session, ctx: Context, access: ProjectAccess, job_id: str, only_units: list[str] | None = None) -> Job:
+def run_job(db: Session, ctx: Context, access: ProjectAccess, job_id: str, only_units: list[str] | None = None,
+            *, new_attempt: bool = True, final: bool = True) -> Job:
+    """Run queued units. A worker calls this once per unit (new_attempt=False, final=False) and commits between."""
     job = get_job(db, access, job_id)
     if job.state == "cancelled":
         return job
     job.state = "processing"
-    job.attempt += 1
+    if new_attempt:
+        job.attempt += 1
     v = db.get(DocumentVersion, job.version_id)
     data = ctx.store.source(v.storage_key)
     for task in job.tasks:
@@ -102,15 +109,15 @@ def run_job(db: Session, ctx: Context, access: ProjectAccess, job_id: str, only_
                     task.state = "failed"
                     task.issues = [issue("TASK_FAILED", "critical", None,
                                          f"Failed after {ctx.settings.task_retries} attempts: {e}; retry this page")]
-    _finish(job)
+    _finish(job, final)
     db.flush()
     return job
 
 
-def _finish(job: Job) -> None:
+def _finish(job: Job, final: bool = True) -> None:
     states = [t.state for t in job.tasks]
     if any(s == "queued" for s in states):
-        job.state = "partial_failed"
+        job.state = "partial_failed" if final else "processing"
     elif all(s == "failed" for s in states):
         job.state = "failed"
     elif any(s == "failed" for s in states):
@@ -139,6 +146,10 @@ def retry(db: Session, ctx: Context, access: ProjectAccess, job_id: str, units: 
             t.state = "queued"
     db.flush()
     audit.record(db, access.principal, "job.retry", "job", job.id, project_id=job.project_id, detail={"units": units})
+    if ctx.settings.job_executor != "inline":
+        if any(t.state == "queued" for t in job.tasks):
+            job.state = "queued"  # a worker picks it up
+        return job
     return run_job(db, ctx, access, job_id, only_units=units)
 
 

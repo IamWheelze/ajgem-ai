@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { API_BASE, api, authHeaders, type JobView } from "../lib/api";
 import { when } from "../lib/format";
-import { useAction, useResource } from "../lib/hooks";
+import { RUNNING_JOB_STATES, useAction, usePolling, useResource } from "../lib/hooks";
 import { useProject } from "../components/Layout";
 import { Empty, ErrorNotice, StatusBadge } from "../components/ui";
 import { JobPanel } from "./Upload";
@@ -12,6 +12,7 @@ interface ExportRow { id: string; format: string; purpose: string; created_at: s
 export default function Jobs() {
   const { pid, can } = useProject();
   const jobs = useResource(() => api.get<{ jobs: JobView[] }>(`/projects/${pid}/jobs`), [pid]);
+  usePolling((jobs.data?.jobs ?? []).some((j) => RUNNING_JOB_STATES.includes(j.state)), jobs.reload, 3000);
   const [open, setOpen] = useState<string | null>(null);
   return (
     <div className="page">

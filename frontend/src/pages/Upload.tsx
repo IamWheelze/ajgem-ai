@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, api, type DocumentList, type JobView } from "../lib/api";
 import { bytes, when } from "../lib/format";
-import { useResource } from "../lib/hooks";
+import { RUNNING_JOB_STATES, usePolling, useResource } from "../lib/hooks";
 import { completeUpload, sendFile, type UploadResult, type UploadSession } from "../lib/upload";
 import { useProject } from "../components/Layout";
 import { DeleteForm, TombstoneSummary, type Tombstone } from "../components/DeleteForm";
@@ -210,6 +210,7 @@ function Outcome({ result, onReset }: { result: UploadResult; onReset: () => voi
 export function JobPanel({ jobId }: { jobId: string }) {
   const job = useResource(() => api.get<JobView>(`/jobs/${jobId}`), [jobId]);
   const [err, setErr] = useState<unknown>();
+  usePolling(RUNNING_JOB_STATES.includes(job.data?.state ?? ""), job.reload);
   if (!job.data) return null;
   const j = job.data;
   const retry = async () => {
@@ -219,7 +220,7 @@ export function JobPanel({ jobId }: { jobId: string }) {
     <div className="card">
       <div className="card-head">
         <h2>Processing manifest</h2>
-        <div className="row"><StatusBadge status={j.state} />{j.retryable.length > 0 && <button className="small" onClick={retry}>Retry {j.retryable.length} failed</button>}</div>
+        <div className="row">{RUNNING_JOB_STATES.includes(j.state) && <span className="faint">Processing on a worker; this updates by itself.</span>}<StatusBadge status={j.state} />{j.retryable.length > 0 && <button className="small" onClick={retry}>Retry {j.retryable.length} failed</button>}</div>
       </div>
       <ErrorNotice error={err} />
       <div className="table-wrap" style={{ maxHeight: 320 }}>

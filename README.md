@@ -142,6 +142,20 @@ export AJGEM_SCANNER=clamd AJGEM_CLAMD_ADDRESS=tcp://127.0.0.1:3310
 
 `unix:///run/clamav/clamd.ctl` also works. Files are streamed to the daemon with `INSTREAM`. Set clamd's `StreamMaxLength` at least as large as the 100 MB upload limit, otherwise large files are refused. Scanning fails closed: if the daemon cannot be reached or cannot give a verdict, the upload is refused with `SCAN_UNAVAILABLE` (503). The uploaded chunks are kept, so completing the upload again retries the scan. Infected files are quarantined. `GET /health` reports whether the database and the scanner are answering.
 
+### Background workers
+
+By default PDF jobs run inside the upload request, which is fine for development. For pilots, queue them instead and run one or more workers:
+
+```bash
+export AJGEM_JOB_EXECUTOR=worker
+```
+
+```bash
+python -m ajgem worker
+```
+
+The worker needs the same environment as the API. A worker leases a job, runs it page by page with each page committed on its own, and acts as the user who started the job, under the same access checks and row-level security. If a worker dies, its lease expires (`AJGEM_JOB_LEASE_SECONDS`, default 300) and another worker continues from the next unfinished page. A job whose pages keep stopping workers is failed after five attempts, so it cannot loop forever. Cancelling takes effect between pages. The web client polls queued and running jobs.
+
 ### Parser sandbox
 
 PDF inspection, page rendering, OCR and spreadsheet reading run in a child process with a CPU limit (`AJGEM_PARSER_CPU_SECONDS`, default 300), a memory limit (`AJGEM_PARSER_MEMORY_MB`, default 2048) and a wall-clock deadline. The child also has no network: it moves into new user and network namespaces. Some hosts disable unprivileged user namespaces. Ubuntu 24.04, for example, needs `sysctl kernel.apparmor_restrict_unprivileged_userns=0`; on such hosts, run the service in a container without network access instead. Each page's quality record shows whether isolation was in effect (`sandbox.network_isolated`). A page that hits a limit is flagged for manual entry and is not retried. `AJGEM_PARSER_SANDBOX=0` runs parsers in-process, for debugging only.

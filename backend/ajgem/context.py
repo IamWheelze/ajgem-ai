@@ -59,6 +59,12 @@ class Settings:
     parser_sandbox: bool = field(default_factory=lambda: os.environ.get("AJGEM_PARSER_SANDBOX", "1") == "1")
     parser_cpu_seconds: int = field(default_factory=lambda: int(os.environ.get("AJGEM_PARSER_CPU_SECONDS", "300")))
     parser_memory_mb: int = field(default_factory=lambda: int(os.environ.get("AJGEM_PARSER_MEMORY_MB", "2048")))
+    # Job execution (FR05): "inline" runs PDF jobs inside the request (development, tests); "worker" only
+    # queues them for `python -m ajgem worker` processes, which hold a renewable lease per job.
+    job_executor: str = field(default_factory=lambda: os.environ.get("AJGEM_JOB_EXECUTOR", "inline"))
+    job_lease_seconds: int = field(default_factory=lambda: int(os.environ.get("AJGEM_JOB_LEASE_SECONDS", "300")))
+    job_max_claims: int = 5
+    worker_poll_seconds: float = field(default_factory=lambda: float(os.environ.get("AJGEM_WORKER_POLL_SECONDS", "2")))
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 

@@ -1,6 +1,7 @@
 """Local development entry points.
 
     python -m ajgem serve                       # API on :8000 (/api + web client when frontend/dist is built)
+    python -m ajgem worker [--once]             # process queued jobs (AJGEM_JOB_EXECUTOR=worker); run one or more
     python -m ajgem create-user ORG EMAIL       # create an organisation (if new) and a user; prints the user id
     python -m ajgem migrate                     # apply pending migrations (owner role); --stamp REV adopts a DB
     python -m ajgem db-status                   # show the database revision and the latest available
@@ -43,7 +44,7 @@ def main(argv: list[str]) -> int:
     from .context import Settings
     from .models import Organisation, User
 
-    if not argv or argv[0] not in {"serve", "create-user", "migrate", "db-status", "revoke-sessions"}:
+    if not argv or argv[0] not in {"serve", "worker", "create-user", "migrate", "db-status", "revoke-sessions"}:
         print(__doc__)
         return 2
     if argv[0] in {"migrate", "db-status"}:
@@ -67,6 +68,17 @@ def main(argv: list[str]) -> int:
         import uvicorn
 
         uvicorn.run(with_web_client(app), host="127.0.0.1", port=8000)
+        return 0
+    if argv[0] == "worker":
+        import logging
+
+        from .services import worker
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+        if "--once" in argv:
+            print(worker.run_once(app.state) or "queue empty")
+        else:
+            worker.run_forever(app.state)
         return 0
     if argv[0] == "revoke-sessions":
         from datetime import datetime, timezone

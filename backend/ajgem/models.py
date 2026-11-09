@@ -229,6 +229,11 @@ class Job(Base):
     created_at: Mapped[datetime] = _ts()
     updated_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    # Durable queue (worker executor): a worker holds a lease while it processes the job; an expired
+    # lease means the worker died and another may take over. `claims` bounds how often that happens.
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claims: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     tasks: Mapped[list["JobTask"]] = relationship(order_by="JobTask.unit_key")
 
 
