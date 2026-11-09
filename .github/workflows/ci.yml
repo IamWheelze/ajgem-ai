@@ -42,7 +42,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements*.txt
       - name: Install Tesseract OCR
-        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-eng
+        run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr tesseract-ocr-eng gdal-bin
       - name: Allow unprivileged user namespaces (the parser sandbox uses them to drop network access)
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: pip install -r requirements-dev.txt

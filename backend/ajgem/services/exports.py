@@ -16,6 +16,7 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import ConflictGroup, DocumentVersion, Export, PageText, Record, RecordRevision, SourceAnchor
 from ..science.analytes import ANALYTE_REGISTRY_VERSION
+from ..science import gpkg
 from ..science.csvsafe import escape_cell
 from ..science.units import UNIT_REGISTRY_VERSION
 from . import audit
@@ -131,8 +132,8 @@ def source_bytes(db: Session, ctx: Context, access: ProjectAccess, version_id: s
 def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: dict, purpose: str) -> Export:
     if not access.membership.can_export:
         raise ApiError("AUTH_FORBIDDEN", "Export requires a separate export grant")
-    if fmt not in {"csv", "geojson"}:
-        raise ApiError("INPUT_UNSUPPORTED", "Formats: csv, geojson (GeoPackage is P1)")
+    if fmt not in {"csv", "geojson", "gpkg"}:
+        raise ApiError("INPUT_UNSUPPORTED", "Formats: csv, geojson, gpkg")
     if not purpose or not purpose.strip():
         raise ApiError("INPUT_INVALID", "An export purpose is required")
     allowed = {"analyte"}
@@ -231,6 +232,15 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
     if fmt == "csv":
         data_name, data = "data.csv", as_csv(rows, EXPORT_COLUMNS)
         samples_name, samples_data = "samples.csv", as_csv(sample_rows, SAMPLE_COLUMNS)
+    elif fmt == "gpkg":
+        # One GeoPackage with both layers; every attribute is TEXT so exact decimals stay exact.
+        data_name, data = "data.gpkg", gpkg.write([
+            {"name": "assays", "description": "Approved assay results (reported and normalised)",
+             "columns": [c for c in EXPORT_COLUMNS], "rows": rows},
+            {"name": "samples", "description": "Approved samples with raw and normalised coordinates",
+             "columns": [c for c in SAMPLE_COLUMNS], "rows": sample_rows},
+        ])
+        samples_name, samples_data = None, b""
     else:
         data_name, data = "data.geojson", as_geojson(rows, EXPORT_COLUMNS)
         samples_name, samples_data = "samples.geojson", as_geojson(sample_rows, SAMPLE_COLUMNS)
@@ -256,13 +266,17 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
                      "rights_statement": v.rights_statement} for v in versions.values() if v],
         "attribution": "Source documents remain subject to their original rights; no portability beyond those rights is implied.",
         "data_file": data_name, "data_sha256": hashlib.sha256(data).hexdigest(),
-        "samples_file": samples_name, "samples_sha256": hashlib.sha256(samples_data).hexdigest(),
-        "columns": {data_name: EXPORT_COLUMNS, samples_name: SAMPLE_COLUMNS},
+        **({"samples_file": samples_name, "samples_sha256": hashlib.sha256(samples_data).hexdigest(),
+            "columns": {data_name: EXPORT_COLUMNS, samples_name: SAMPLE_COLUMNS}} if samples_name else
+           {"columns": {f"{data_name}:assays": EXPORT_COLUMNS, f"{data_name}:samples": SAMPLE_COLUMNS}}),
     }
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(data_name, data)
-        z.writestr(samples_name, samples_data)
+        if samples_name:
+            z.writestr(samples_name, samples_data)
+        z.writestr("evidence_summary.md", evidence_summary(access.project.name, purpose, filters, rows, sample_rows,
+                                                           list(versions.values()), manifest))
         z.writestr("manifest.json", json.dumps(manifest, indent=1, default=str))
     exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
                  filters=filters, manifest=manifest, payload=zbuf.getvalue(), created_by=access.principal.user_id)
@@ -271,6 +285,51 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
     audit.record(db, access.principal, "export.create", "export", exp.id, project_id=pid,
                  detail={"format": fmt, "records": len(rows), "purpose": purpose})
     return exp
+
+
+def evidence_summary(project: str, purpose: str, filters: dict, rows: list[dict], sample_rows: list[dict],
+                     versions: list, manifest: dict) -> str:
+    """FR20: a human-readable, source-linked summary of what the export holds. Counts and references only;
+    it states what was reviewed and from where, and makes no geological interpretation."""
+    by_source: dict[str | None, list[dict]] = {}
+    for r in rows:
+        by_source.setdefault(r["source_version_id"], []).append(r)
+    analytes: dict[str, dict] = {}
+    for r in rows:
+        a = analytes.setdefault(r["analyte"] or "unknown", {"n": 0, "censored": 0, "units": set()})
+        a["n"] += 1
+        a["censored"] += r["comparator"] not in (None, "EQ")
+        a["units"].add(r["unit"] or "?")
+    unresolved = manifest.get("unresolved", {})
+    lines = [
+        f"# Evidence summary: {project}", "",
+        f"Purpose: {purpose}  ",
+        f"Created: {manifest['created_at']}  ",
+        f"Filters: {json.dumps(filters) if filters else 'none'}  ",
+        "Scope: approved record revisions only. This summary lists reviewed records and where they came from; it "
+        "does not estimate resources or reserves, and it contains no geological interpretation.", "",
+        "## Contents", "",
+        f"- {len(rows)} approved assay results, {len(sample_rows)} approved samples",
+        f"- {manifest.get('unmapped_count', 0)} assay rows without an approved location"
+        + (" (coordinates withheld for this export)" if manifest.get("coordinates_withheld") else ""),
+        f"- Not included and still open: {unresolved.get('open_conflicts', 0)} unresolved conflicts, "
+        f"{unresolved.get('records_needing_review', 0)} records awaiting review, "
+        f"{unresolved.get('stale_records', 0)} stale records", "",
+        "## Results by analyte", "",
+        "| Analyte | Results | Censored (< or >) | Units as reported |", "|---|---|---|---|",
+    ]
+    for code in sorted(analytes):
+        a = analytes[code]
+        lines.append(f"| {code} | {a['n']} | {a['censored']} | {', '.join(sorted(a['units']))} |")
+    lines += ["", "## Sources", "", "Every row in the data files names its record, revision and source anchors "
+              "(`anchor_refs`: version id with page and character range, or sheet and cell).", "",
+              "| Source | Version id | SHA-256 | Status | Results |", "|---|---|---|---|---|"]
+    for v in sorted(versions, key=lambda v: v.filename):
+        lines.append(f"| {v.filename} | `{v.id}` | `{v.sha256}` | {v.status} | {len(by_source.get(v.id, []))} |")
+    if by_source.get(None):
+        lines.append(f"| (entered manually) | | | | {len(by_source[None])} |")
+    lines += ["", "Rights: " + manifest.get("attribution", ""), ""]
+    return "\n".join(lines)
 
 
 def _anchor_ref(a: SourceAnchor) -> str:

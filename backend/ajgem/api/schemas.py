@@ -112,6 +112,6 @@ class DeletionIn(Strict):
 
 
 class ExportIn(Strict):
-    format: Literal["csv", "geojson"]
+    format: Literal["csv", "geojson", "gpkg"]
     filters: dict[str, Any] = Field(default_factory=dict)
     purpose: str

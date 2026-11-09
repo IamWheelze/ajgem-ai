@@ -47,7 +47,7 @@ export default function Jobs() {
 function Exports() {
   const { pid, can } = useProject();
   const list = useResource(() => api.get<{ exports: ExportRow[] }>(`/projects/${pid}/exports`), [pid]);
-  const [fmt, setFmt] = useState<"csv" | "geojson">("csv");
+  const [fmt, setFmt] = useState<"csv" | "geojson" | "gpkg">("csv");
   const [analyte, setAnalyte] = useState("");
   const [purpose, setPurpose] = useState("");
   const [view, setView] = useState<ExportRow | null>(null);
@@ -72,7 +72,7 @@ function Exports() {
     <section className="card">
       <div className="card-head"><h2>Exports</h2><span className="faint">Approved records only · ZIP with data and provenance manifest</span></div>
       <form className="card-pad row" onSubmit={(e) => { e.preventDefault(); create.run(); }} style={{ alignItems: "flex-end" }}>
-        <label className="field">Format<select value={fmt} onChange={(e) => setFmt(e.target.value as "csv" | "geojson")}><option value="csv">CSV</option><option value="geojson">GeoJSON</option></select></label>
+        <label className="field">Format<select value={fmt} onChange={(e) => setFmt(e.target.value as "csv" | "geojson" | "gpkg")}><option value="csv">CSV</option><option value="geojson">GeoJSON</option><option value="gpkg">GeoPackage</option></select></label>
         <label className="field">Analyte<input value={analyte} onChange={(e) => setAnalyte(e.target.value)} placeholder="all" style={{ width: 90 }} /></label>
         <label className="field" style={{ flex: 1 }}>Purpose (recorded)<input value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="e.g. Quarterly technical review pack" /></label>
         <button className="primary" disabled={!purpose.trim() || create.pending}>Create export</button>
