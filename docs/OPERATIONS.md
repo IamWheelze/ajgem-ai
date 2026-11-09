@@ -132,6 +132,16 @@ Suggested alerts:
 | Backup missing | The backup job's own success signal is older than 26 hours (outside this service) |
 | Budget | `ajgem_usage_month_tokens` approaching the organisation budget |
 
+## Encryption (NF03)
+
+| Layer | Setting |
+|---|---|
+| In transit | Terminate TLS at the load balancer or proxy, forward `X-Forwarded-Proto`, and set `AJGEM_REQUIRE_HTTPS=1`. Database connections: add `?sslmode=verify-full` to both database URLs. |
+| Database at rest | Use the managed PostgreSQL provider's storage encryption with a customer-managed key |
+| Objects at rest | Use an object store with server-side encryption under a managed key; for the local directory, an encrypted volume |
+| Backups | Encrypt dumps and object copies with the managed key before they leave the host |
+| Secrets | Database passwords, the ClamAV address if remote, `ANTHROPIC_API_KEY`, `AJGEM_URL_SECRET` and `AJGEM_METRICS_TOKEN` come from the secrets manager and are rotated after an incident. `AJGEM_URL_SECRET` must be set explicitly in production: if it is unset, a random one is generated per process, and view links stop working across restarts and workers. |
+
 ## Upgrades and rollback
 
 - **Before an upgrade:** take a backup as above.

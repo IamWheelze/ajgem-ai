@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from .. import security
 from ..context import Context, Settings
 from ..metrics import Registry
 from ..metrics import gauges as metrics_gauges
@@ -108,6 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     registry = Registry()
     app.state.metrics = registry
+    security.install(app, settings, api=True)
 
     @app.middleware("http")
     async def correlation(request: Request, call_next):

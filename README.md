@@ -133,6 +133,10 @@ export AJGEM_AUTH_MODE=oidc AJGEM_OIDC_ISSUER=https://login.example.com/your-ten
 - **Session length:** sessions last at most `AJGEM_OIDC_MAX_SESSION_HOURS` (default 12).
 - **Local testing:** `python scripts/mock_oidc.py` runs a development-only identity provider on port 9000 (anyone can sign in as anyone). Start the API with `AJGEM_OIDC_ISSUER=http://127.0.0.1:9000 AJGEM_OIDC_CLIENT_ID=ajgem-web`.
 
+### HTTPS and browser hardening
+
+Every response carries security headers: `nosniff`, `Referrer-Policy: no-referrer` (view links carry short-lived tokens), same-origin framing, and HSTS over HTTPS. The web client is served with a Content Security Policy that allows scripts from its own origin only, and network calls only to its own origin and the identity provider. If you add a basemap, list its hosts in `AJGEM_CSP_CONNECT_EXTRA` (space-separated origins). Set `AJGEM_REQUIRE_HTTPS=1` in production: plain-HTTP API calls are refused and the web client redirects to HTTPS. Behind a TLS-terminating proxy, the proxy must send `X-Forwarded-Proto`.
+
 ### Malware scanning
 
 Every upload is scanned before it is stored as a version. The default scanner only recognises the EICAR test file and is for development. For real data, run a ClamAV daemon and set:

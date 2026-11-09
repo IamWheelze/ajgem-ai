@@ -67,6 +67,9 @@ class Settings:
     worker_poll_seconds: float = field(default_factory=lambda: float(os.environ.get("AJGEM_WORKER_POLL_SECONDS", "2")))
     # Operator metrics (NF08): GET /metrics is disabled unless a bearer token is configured.
     metrics_token: str | None = field(default_factory=lambda: os.environ.get("AJGEM_METRICS_TOKEN") or None)
+    # Transport hardening (NF03): refuse plain HTTP; extra origins the web client may call (e.g. the basemap host).
+    require_https: bool = field(default_factory=lambda: os.environ.get("AJGEM_REQUIRE_HTTPS", "0") == "1")
+    csp_connect_extra: str = field(default_factory=lambda: os.environ.get("AJGEM_CSP_CONNECT_EXTRA", ""))
     # Development login picker (lists users). Must be disabled wherever real identity is used.
     dev_login: bool = field(default_factory=lambda: os.environ.get("AJGEM_DEV_LOGIN", "1") == "1")
 

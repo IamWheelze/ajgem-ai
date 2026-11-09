@@ -28,7 +28,10 @@ def with_web_client(api_app):
     from fastapi import FastAPI
     from fastapi.responses import FileResponse
 
+    from . import security
+
     root = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    security.install(root, api_app.state.ctx.settings, api=False)
     root.mount("/api", api_app)
 
     @root.get("/{path:path}", include_in_schema=False)
