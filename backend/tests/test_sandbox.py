@@ -135,3 +135,27 @@ def test_spreadsheet_parsing_is_bounded_too(team, app):
         assert "parser's limits" in r.json()["error"]["message"]
     finally:
         app.state.ctx.settings.parser_memory_mb = 2048
+
+
+def test_text_layer_anchors_are_placed_on_the_page(team, app):
+    """FR13: a text-layer figure is outlined at the same occurrence the extractor read, not the first match."""
+    an, pid = team["analyst"], team["pid"]
+    up = an.upload(pid, make_pdf([["Certificate No: CERT-T", "KW-701 Li 1850 ppm", "KW-702 Li 1850 ppm"]]), "t.pdf").json()
+    recs = {r["data"]["sample_id"]: r for r in
+            an.get(f"/projects/{pid}/records", params={"kind": "assay"}).json()["records"]}
+    boxes = {}
+    for sid in ("KW-701", "KW-702"):
+        aid = recs[sid]["field_anchors"]["result_raw"][0]
+        v = an.get(f"/sources/{up['version_id']}/anchors/{aid}").json()
+        a = v["anchor"]
+        assert a["raw_text"] == "1850" and a["bbox_source"] == "text_layer"
+        assert a["bbox_convention"] == "pdf_points_top_left"
+        boxes[sid] = a["bbox"]
+        w, h = v["page"]["size"]
+        x0, y0, x1, y1 = a["bbox"]
+        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h and (y1 - y0) < 20
+    assert boxes["KW-702"][1] > boxes["KW-701"][1]  # the second line's figure sits lower on the page
+    assert abs(boxes["KW-702"][0] - boxes["KW-701"][0]) < 1
+    # The page image itself is rendered in the sandbox too.
+    img = an.get(v["page"]["image_url"])
+    assert img.status_code == 200 and img.content[:8] == b"\x89PNG\r\n\x1a\n"

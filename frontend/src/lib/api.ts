@@ -140,6 +140,7 @@ export interface AnchorView {
     cell_ref: string | null;
     raw_text: string;
     bbox_convention?: string | null;
+    bbox_source?: "ocr" | "text_layer" | null;
     confidence?: number | null;
   };
   page?: {

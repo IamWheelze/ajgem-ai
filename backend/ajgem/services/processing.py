@@ -277,6 +277,48 @@ def parse_page(source, page_index: int, ocr_timeout: int) -> dict:
     return {**out, "text": page.text, "lines": page.lines, "method": page.engine, "quality": q, "issues": page_issues}
 
 
+def text_layer_box(source, page_index: int, needle: str, occurrence: int) -> list[float] | None:
+    """Runs in the parser sandbox: the box of the n-th occurrence of `needle` in a page's text layer.
+
+    Returns [x0, y0, x1, y1] in PDF points with the origin at the top left (as OCR boxes), or None when
+    the text layer cannot place it (different spacing, ligatures): then no box is shown rather than a guess.
+    """
+    import pypdfium2 as pdfium
+
+    needle = needle.strip()
+    if not needle or "\n" in needle:
+        return None
+    doc = pdfium.PdfDocument(_read(source))
+    try:
+        page = doc[page_index]
+        height = page.get_size()[1]
+        tp = page.get_textpage()
+        searcher = tp.search(needle, match_case=True, match_whole_word=False)
+        hit, seen = None, 0
+        while (r := searcher.get_next()) is not None:
+            if seen == occurrence:
+                hit = r
+                break
+            seen += 1
+        if hit is None:
+            return None
+        start, count = hit
+        boxes = [tp.get_charbox(start + k) for k in range(count)]
+        boxes = [b for b in boxes if b[2] > b[0] or b[3] > b[1]]  # spaces have empty boxes
+        if not boxes:
+            return None
+        left, bottom = min(b[0] for b in boxes), min(b[1] for b in boxes)
+        right, top = max(b[2] for b in boxes), max(b[3] for b in boxes)
+        return [round(left, 2), round(height - top, 2), round(right, 2), round(height - bottom, 2)]
+    finally:
+        doc.close()
+
+
+def render_page(source, page_index: int, dpi: int) -> bytes:
+    """Runs in the parser sandbox: one page as PNG."""
+    return ocr.render_page_png(_read(source), page_index, dpi=dpi)
+
+
 def sandbox_limits(settings) -> sandbox.Limits:
     return sandbox.Limits(cpu_seconds=settings.parser_cpu_seconds, memory_bytes=settings.parser_memory_mb * 2**20,
                           wall_seconds=float(settings.parser_cpu_seconds * 2))
@@ -373,8 +415,7 @@ def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersio
             uncertainty = "high" if low or "LOW_PAGE_CONFIDENCE" in quality.get("flags", []) else "medium"
             method_ = f"{EXTRACTOR_VERSION}+ocr"
         else:
-            extra = [issue("BBOX_UNAVAILABLE", "info", None,
-                           "Text-layer extraction has page and offset anchors but no word boxes")]
+            extra = []  # text-layer anchors are outlined on the page image when viewed (exports.anchor_view)
             uncertainty, method_ = "medium", EXTRACTOR_VERSION
         create_candidate(
             db, access, "assay", f"{v.id}:{task.unit_key}:{start}", data_,

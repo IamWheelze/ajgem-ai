@@ -58,7 +58,7 @@ export function AnchorCard({ anchorId, field, showOriginal = false }: { anchorId
             )}
             {!!v.page?.quality.rotation_applied && <span className="badge">rotated {v.page.quality.rotation_applied}°</span>}
             {v.page?.quality.flags?.includes("LOW_PAGE_CONFIDENCE") && <span className="badge warn">poor scan</span>}
-            {!a.bbox && v.page?.quality.method !== "ocr" && <span className="faint">· text layer, no word boxes</span>}
+            {!a.bbox && v.page?.quality.method !== "ocr" && <span className="faint">· text layer; this text could not be placed on the page image</span>}
           </div>
           <div className="evidence-text">{v.context ? <Highlighted text={v.context} range={v.context_highlight} /> : a.raw_text}</div>
         </>

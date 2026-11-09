@@ -37,7 +37,7 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if v.status == "deleted":
         return {"available": False, "reason": "EVIDENCE_DELETED", "message": "Evidence removed; cannot support a claim"}
-    context, highlight, page = None, None, None
+    context, highlight, page, text_box = None, None, None, None
     if a.kind == "pdf_text":
         pt = db.scalar(select(PageText).where(PageText.version_id == v.id, PageText.page_index == a.page_index))
         if pt:
@@ -46,6 +46,8 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
             page = {"method": pt.method, "size": q.get("page_size"), "quality": q,
                     "image_url": (f"/sources/{v.id}/pages/{a.page_index}.png?u={access.principal.user_id}"
                                   f"&token={token}")}
+        if pt and a.bbox is None and a.text_start is not None and a.raw_text and q.get("method") == "text_layer":
+            text_box = _text_layer_box(ctx, v, pt.text, a)
         if pt and a.text_start is not None:
             # Widen to whole lines so the excerpt never starts or ends mid-word.
             c0 = pt.text.rfind("\n", 0, max(0, a.text_start - 120)) + 1
@@ -57,9 +59,11 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
         "version": {"id": v.id, "document_id": v.document_id, "version_no": v.version_no, "filename": v.filename,
                     "sha256": v.sha256, "status": v.status, "superseded": v.status == "superseded"},
         "anchor": {"id": a.id, "kind": a.kind, "page_index": a.page_index, "page_label": a.page_label,
-                   "bbox": a.bbox, "text_start": a.text_start, "text_end": a.text_end, "sheet": a.sheet,
+                   "bbox": a.bbox or text_box, "bbox_source": "ocr" if a.bbox else ("text_layer" if text_box else None),
+                   "text_start": a.text_start, "text_end": a.text_end, "sheet": a.sheet,
                    "row_number": a.row_number, "column": a.column, "cell_ref": a.cell_ref, "raw_text": a.raw_text,
-                   "bbox_convention": a.bbox_convention, "confidence": a.confidence},
+                   "bbox_convention": a.bbox_convention or ("pdf_points_top_left" if text_box else None),
+                   "confidence": a.confidence},
         "page": page,
         "context": context,
         "context_highlight": highlight,
@@ -69,23 +73,40 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
     }
 
 
+def _text_layer_box(ctx: Context, v: DocumentVersion, page_text: str, a: SourceAnchor) -> list[float] | None:
+    """Locate a text-layer anchor on the page (sandboxed): the same occurrence of its text as in the extracted text."""
+    from . import processing, sandbox
+
+    occurrence = page_text.count(a.raw_text, 0, a.text_start)
+    try:
+        box, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, processing.text_layer_box,
+                                       ctx.store.source(v.storage_key), a.page_index or 0, a.raw_text, occurrence,
+                                       limits=processing.sandbox_limits(ctx.settings))
+        return box
+    except Exception:  # noqa: BLE001 - a missing box only means no outline is drawn
+        return None
+
+
 PAGE_IMAGE_DPI = 110
 
 
 def page_image(db: Session, ctx: Context, access: ProjectAccess, version_id: str, page_index: int, token: str) -> bytes:
     """Render one page of an immutable PDF version as PNG for evidence highlighting (FR13)."""
-    from . import ocr
-
     v = db.get(DocumentVersion, version_id)
     if v is None or v.project_id != access.project.id or v.status == "deleted" or v.detected_format != "pdf":
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if not ctx.signer.verify(v.id, access.principal.user_id, token):
         raise ApiError("AUTH_FORBIDDEN", "View link expired or invalid; request a new one")
-    data = ctx.store.get(v.storage_key)
+    from . import processing, sandbox
+
     try:
-        return ocr.render_page_png(data, page_index, dpi=PAGE_IMAGE_DPI)
+        png, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, processing.render_page, ctx.store.source(v.storage_key),
+                                       page_index, PAGE_IMAGE_DPI, limits=processing.sandbox_limits(ctx.settings))
+        return png
     except IndexError:
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied") from None
+    except (sandbox.ParserLimitExceeded, sandbox.SandboxError) as e:
+        raise ApiError("INPUT_UNSUPPORTED", f"The page could not be rendered within the parser's limits: {e}") from None
 
 
 def source_bytes(db: Session, ctx: Context, access: ProjectAccess, version_id: str, token: str) -> tuple[bytes, str, str]:
