@@ -76,6 +76,20 @@ The server also checks at start-up that row-level security is installed and that
 
 Repeat the drill on the pilot infrastructure with a copy of real pilot data, record the time it took against the 8-hour target, and add a row here.
 
+## Processing benchmark (NF10)
+
+```bash
+cd backend && python scripts/benchmark_ocr.py --pages 100
+```
+
+This processes a synthetic printed scan through the real pipeline: sandbox, Tesseract, extraction and validation. Add `--workers N` to use the durable queue.
+
+| Date | Hardware | Scan | Result |
+|---|---|---|---|
+| 2026-11-09 | 4-core Intel Xeon @ 2.10 GHz, 15 GB RAM, Tesseract 5.3.4, SQLite | 100 pages at 200 DPI, 20 assay rows a page, clean synthetic print | Inline: 181 s (33 pages a minute); all 100 pages succeeded and 2,000 of 2,000 rows were extracted. With 3 workers: 182 s. A job is leased to one worker, so workers add throughput across documents, not within one. |
+
+The NF10 target is 100 pages in 30 minutes, so the margin on clean scans is about tenfold. Real scans (skew, stamps, low contrast, handwriting) are slower and less accurate. Repeat the run on the pilot worker profile with a sample of real scans, and record the scan difficulty with the result.
+
 ## Monitoring
 
 Set `AJGEM_METRICS_TOKEN` and scrape `GET /api/metrics` (or `/metrics` when the API is served on its own) with `Authorization: Bearer <token>`. The output is in the Prometheus text format. It holds aggregates only: request counts and latency by route template, API error codes, the review queue, jobs and pages by state, and this month's metered usage. It never includes tenant names, ids, evidence or prompts. `GET /health` reports whether the database and the malware scanner are answering; use it for liveness and readiness probes.
