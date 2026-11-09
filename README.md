@@ -159,7 +159,7 @@ export AJGEM_JOB_EXECUTOR=worker
 python -m ajgem worker
 ```
 
-The worker needs the same environment as the API. A worker leases a job, runs it page by page with each page committed on its own, and acts as the user who started the job, under the same access checks and row-level security. If a worker dies, its lease expires (`AJGEM_JOB_LEASE_SECONDS`, default 300) and another worker continues from the next unfinished page. A job whose pages keep stopping workers is failed after five attempts, so it cannot loop forever. Cancelling takes effect between pages. The web client polls queued and running jobs.
+The worker needs the same environment as the API. A worker leases a job, runs it page by page with each page committed on its own, and acts as the user who started the job, under the same access checks and row-level security. If a worker dies, its lease expires (`AJGEM_JOB_LEASE_SECONDS`, default 300) and another worker continues from the next unfinished page. A job whose pages keep stopping workers is failed after five attempts, so it cannot loop forever. Cancelling takes effect between pages. Exports with more than `AJGEM_EXPORT_INLINE_ROWS` approved records (default 20,000) are built the same way, as the user who asked for them, with their export grant checked again when the worker runs. The web client polls queued and running jobs and exports.
 
 ### Usage, quotas and budgets
 

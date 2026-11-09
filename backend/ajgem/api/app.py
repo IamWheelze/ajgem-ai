@@ -491,7 +491,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/projects/{pid}/exports", status_code=201)
     def create_export(pid: str, body: S.ExportIn, s: Session = Depends(db), p: Principal = Depends(principal)):
         e = exports_svc.create_export(s, ctx, project_access(s, p, pid), body.format, body.filters, body.purpose)
-        return {"id": e.id, "manifest": e.manifest}
+        return {"id": e.id, "state": e.state, "job_id": e.job_id, "manifest": e.manifest}
 
     @app.get("/exports/{eid}/download")
     def download(eid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
@@ -699,7 +699,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"exports": []}
         es = s.scalars(select(Export).where(Export.project_id == pid).order_by(Export.created_at.desc()).limit(100))
         return {"exports": [{"id": e.id, "format": e.format, "purpose": e.purpose, "created_at": e.created_at.isoformat(),
-                             "manifest": e.manifest} for e in es]}
+                             "state": e.state, "job_id": e.job_id, "manifest": e.manifest} for e in es]}
 
     @app.get("/projects/{pid}/answers")
     def list_answers(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):

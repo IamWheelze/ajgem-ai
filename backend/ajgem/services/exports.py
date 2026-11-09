@@ -129,7 +129,7 @@ def source_bytes(db: Session, ctx: Context, access: ProjectAccess, version_id: s
 
 
 # ---------------------------------------------------------------- exports
-def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: dict, purpose: str) -> Export:
+def _check_request(access: ProjectAccess, fmt: str, filters: dict, purpose: str) -> None:
     if not access.membership.can_export:
         raise ApiError("AUTH_FORBIDDEN", "Export requires a separate export grant")
     if fmt not in {"csv", "geojson", "gpkg"}:
@@ -139,6 +139,72 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
     allowed = {"analyte"}
     if set(filters) - allowed:
         raise ApiError("INPUT_INVALID", f"Unknown filters: {sorted(set(filters) - allowed)}")
+
+
+def _estimated_rows(db: Session, project_id: str) -> int:
+    return db.scalar(select(func.count()).select_from(Record).where(
+        Record.project_id == project_id, Record.approved_revision_no.is_not(None),
+        Record.kind.in_(["assay", "sample"]))) or 0
+
+
+def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: dict, purpose: str) -> Export:
+    """Build an export now, or, with the worker executor and a large project, queue it as a job (FR20)."""
+    _check_request(access, fmt, filters, purpose)
+    pid = access.project.id
+    estimate = _estimated_rows(db, pid)
+    if ctx.settings.job_executor != "inline" and estimate > ctx.settings.export_inline_rows:
+        from ..models import Job, JobTask
+
+        job = Job(organisation_id=access.project.organisation_id, project_id=pid, version_id=None, kind="export",
+                  state="queued", created_by=access.principal.user_id, cost_counters={"estimated_rows": estimate},
+                  manifest={"units": [{"unit": "export", "state": "queued", "attempts": 0, "candidates": 0,
+                                       "issues": []}]})
+        db.add(job)
+        db.flush()
+        db.add(JobTask(job_id=job.id, unit_key="export"))
+        exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
+                     filters=filters, payload=b"", state="queued", job_id=job.id, created_by=access.principal.user_id,
+                     manifest={"state": "queued", "export_format": fmt, "purpose": purpose, "filters": filters,
+                               "estimated_rows": estimate,
+                               "note": "Large export: it is being prepared by a background worker."})
+        db.add(exp)
+        db.flush()
+        job.manifest = {**job.manifest, "export_id": exp.id}
+        audit.record(db, access.principal, "export.create", "export", exp.id, project_id=pid,
+                     detail={"format": fmt, "purpose": purpose, "queued": True, "estimated_rows": estimate})
+        return exp
+    payload, manifest, n = _build(db, ctx, access, fmt, filters, purpose)
+    exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
+                 filters=filters, manifest=manifest, payload=payload, created_by=access.principal.user_id)
+    db.add(exp)
+    db.flush()
+    audit.record(db, access.principal, "export.create", "export", exp.id, project_id=pid,
+                 detail={"format": fmt, "records": n, "purpose": purpose})
+    return exp
+
+
+def build_queued(db: Session, ctx: Context, access: ProjectAccess, export_id: str) -> Export:
+    """Worker side: build a queued export as the person who asked for it, re-checking their export grant."""
+    exp = db.get(Export, export_id)
+    if exp is None or exp.project_id != access.project.id:
+        raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
+    if exp.state == "ready":
+        return exp  # idempotent: a retried unit never rebuilds
+    try:
+        _check_request(access, exp.format, exp.filters or {}, exp.purpose)
+    except ApiError as e:
+        exp.state = "failed"
+        exp.manifest = {**(exp.manifest or {}), "state": "failed", "error": e.message}
+        raise
+    payload, manifest, n = _build(db, ctx, access, exp.format, exp.filters or {}, exp.purpose)
+    exp.payload, exp.manifest, exp.state = payload, {**manifest, "state": "ready"}, "ready"
+    audit.record(db, access.principal, "export.ready", "export", exp.id, project_id=exp.project_id,
+                 detail={"format": exp.format, "records": n})
+    return exp
+
+
+def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: dict, purpose: str
+           ) -> tuple[bytes, dict, int]:
     exact_coords = access.membership.can_export_exact_coordinates or bool(access.roles & {"admin", "analyst", "reviewer"})
     pid = access.project.id
     sample_pairs = with_revisions(db, pid, "sample")
@@ -278,13 +344,7 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
         z.writestr("evidence_summary.md", evidence_summary(access.project.name, purpose, filters, rows, sample_rows,
                                                            list(versions.values()), manifest))
         z.writestr("manifest.json", json.dumps(manifest, indent=1, default=str))
-    exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
-                 filters=filters, manifest=manifest, payload=zbuf.getvalue(), created_by=access.principal.user_id)
-    db.add(exp)
-    db.flush()
-    audit.record(db, access.principal, "export.create", "export", exp.id, project_id=pid,
-                 detail={"format": fmt, "records": len(rows), "purpose": purpose})
-    return exp
+    return zbuf.getvalue(), manifest, len(rows)
 
 
 def evidence_summary(project: str, purpose: str, filters: dict, rows: list[dict], sample_rows: list[dict],
@@ -347,5 +407,9 @@ def download_export(db: Session, access: ProjectAccess, export_id: str) -> Expor
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if (e.manifest or {}).get("revoked"):
         raise ApiError("EVIDENCE_DELETED", e.manifest["revoked"]["message"])
+    if e.state == "queued":
+        raise ApiError("CONFLICT", "This export is still being prepared; try again when it is ready")
+    if e.state == "failed":
+        raise ApiError("CONFLICT", f"This export could not be built: {(e.manifest or {}).get('error', 'unknown error')}")
     audit.record(db, access.principal, "export.download", "export", e.id, project_id=e.project_id)
     return e

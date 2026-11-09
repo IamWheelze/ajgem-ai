@@ -64,6 +64,8 @@ class Settings:
     job_executor: str = field(default_factory=lambda: os.environ.get("AJGEM_JOB_EXECUTOR", "inline"))
     job_lease_seconds: int = field(default_factory=lambda: int(os.environ.get("AJGEM_JOB_LEASE_SECONDS", "300")))
     job_max_claims: int = 5
+    # FR20: with the worker executor, exports expected to exceed this many rows are built as background jobs.
+    export_inline_rows: int = field(default_factory=lambda: int(os.environ.get("AJGEM_EXPORT_INLINE_ROWS", "20000")))
     worker_poll_seconds: float = field(default_factory=lambda: float(os.environ.get("AJGEM_WORKER_POLL_SECONDS", "2")))
     # Operator metrics (NF08): GET /metrics is disabled unless a bearer token is configured.
     metrics_token: str | None = field(default_factory=lambda: os.environ.get("AJGEM_METRICS_TOKEN") or None)

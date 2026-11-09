@@ -365,6 +365,10 @@ class Export(Base):
     filters: Mapped[dict] = mapped_column(JSON)
     manifest: Mapped[dict] = mapped_column(JSON)
     payload: Mapped[bytes] = mapped_column(LargeBinary)
+    # FR20: large exports are built by a worker. "ready" exports can be downloaded; "queued" ones are being
+    # prepared; "failed" ones say why in the manifest.
+    state: Mapped[str] = mapped_column(String(16), default="ready", server_default="ready")
+    job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
 
