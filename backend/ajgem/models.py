@@ -217,6 +217,9 @@ class SourceAnchor(Base):
     raw_text: Mapped[str] = mapped_column(Text, default="")
     # OCR word confidence (0-100) for the anchored words; null for native text and table cells.
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # DOCX (kind "doc_text"): renderer-independent position, so the citation survives a re-render (FR23):
+    # {"renderer", "paragraph", "start", "end", "sha"}.
+    locator: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Job(Base):

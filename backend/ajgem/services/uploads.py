@@ -124,7 +124,9 @@ def detect_format(data: bytes, filename: str) -> str:
         if "xl/workbook.xml" in names:
             return "xlsx"
         if "word/document.xml" in names:
-            raise ApiError("INPUT_UNSUPPORTED", "DOCX ingestion is planned for P1 (FR23)")
+            if "word/vbaProject.bin" in names:
+                raise ApiError("INPUT_UNSUPPORTED", "Macro-enabled Word documents are not accepted; save as .docx without macros")
+            return "docx"
         raise ApiError("INPUT_UNSUPPORTED", "Unrecognised ZIP-based format")
     head = data[:65536]
     if b"\x00" not in head and name.endswith((".csv", ".txt", ".tsv")):
@@ -162,6 +164,8 @@ def complete(db: Session, ctx: Context, access: ProjectAccess, session_id: str, 
     fmt = detect_format(data, s.filename)
     if fmt == "pdf":
         _check_pdf(ctx, data)
+    elif fmt == "docx":
+        _check_docx(ctx, data)
 
     dup = db.scalar(select(DocumentVersion).where(
         DocumentVersion.project_id == s.project_id, DocumentVersion.sha256 == digest,
@@ -217,6 +221,18 @@ def complete(db: Session, ctx: Context, access: ProjectAccess, session_id: str, 
     audit.record(db, access.principal, "source.version.create", "document_version", v.id, project_id=s.project_id,
                  before=prev.id if prev else None, after=v.id, detail={"sha256": digest, "format": fmt})
     return s.result
+
+
+def _check_docx(ctx: Context, data: bytes) -> None:
+    from . import docx, processing, sandbox
+
+    try:
+        info, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, docx.page_count, data,
+                                        limits=processing.sandbox_limits(ctx.settings))
+    except (sandbox.ParserLimitExceeded, sandbox.SandboxError) as e:
+        raise ApiError("INPUT_UNSUPPORTED", f"Word document could not be inspected safely: {e}") from None
+    if "error" in info:
+        raise ApiError("INPUT_UNSUPPORTED", f"Word document cannot be read: {info['error']}")
 
 
 def _check_pdf(ctx: Context, data: bytes) -> None:

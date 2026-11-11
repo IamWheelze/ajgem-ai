@@ -248,7 +248,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result["status"] == "quarantined":
             s.commit()
             raise ApiError("FILE_QUARANTINED", f"File quarantined by malware scan: {result['reason']}")
-        if result["status"] == "stored" and result["format"] == "pdf" and "job_id" not in result:
+        if result["status"] == "stored" and result["format"] in ("pdf", "docx") and "job_id" not in result:
             job = processing.start_pdf_job(s, ctx, a, result["version_id"])
             result = dict(result, job_id=job.id)
             s.get(UploadSession, uid).result = result
@@ -501,6 +501,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(e.payload, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="export-{e.id}.zip"',
                                  "Cache-Control": "private, no-store"})
+
+    @app.post("/versions/{vid}/rerender")
+    def rerender(vid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        """FR23: re-render a Word document with the current renderer; citations move by their locators."""
+        a, _ = via(DocumentVersion, vid, s, p)
+        return processing.rerender_docx(s, ctx, a, vid)
 
     # ------------------------------------------------------------ targets and checklists (FR18)
     @app.get("/projects/{pid}/checklists")

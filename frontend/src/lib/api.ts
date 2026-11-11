@@ -128,7 +128,8 @@ export interface AnchorView {
   version?: { id: string; document_id: string; version_no: number; filename: string; sha256: string; status: string; superseded: boolean };
   anchor?: {
     id: string;
-    kind: "pdf_text" | "table_cell";
+    kind: "pdf_text" | "doc_text" | "table_cell";
+    locator?: { renderer: string; paragraph: number; start: number; end: number; drift?: { renderer: string; reason: string } } | null;
     page_index: number | null;
     page_label: string | null;
     bbox: number[] | null;
@@ -146,7 +147,7 @@ export interface AnchorView {
   page?: {
     method: string;
     size: [number, number] | null;
-    image_url: string;
+    image_url: string | null;
     quality: { method?: string; engine?: string; mean_confidence?: number | null; low_confidence_words?: number; rotation_applied?: number; flags?: string[] };
   } | null;
   context?: string | null;

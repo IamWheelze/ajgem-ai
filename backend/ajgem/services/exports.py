@@ -48,14 +48,16 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
     if v.status == "deleted":
         return {"available": False, "reason": "EVIDENCE_DELETED", "message": "Evidence removed; cannot support a claim"}
     context, highlight, page, text_box = None, None, None, None
-    if a.kind == "pdf_text":
+    if a.kind in ("pdf_text", "doc_text"):
         pt = db.scalar(select(PageText).where(PageText.version_id == v.id, PageText.page_index == a.page_index))
         if pt:
             q = pt.quality or {}
             token = ctx.signer.sign(v.id, access.principal.user_id)
-            page = {"method": pt.method, "size": q.get("page_size"), "quality": q,
+            page = {"method": pt.method, "size": q.get("page_size"),
+                    "quality": {k: val for k, val in q.items() if k != "paragraphs"},
+                    # Word documents have no fixed page image: their frozen rendering is the text itself.
                     "image_url": (f"/sources/{v.id}/pages/{a.page_index}.png?u={access.principal.user_id}"
-                                  f"&token={token}")}
+                                  f"&token={token}") if v.detected_format == "pdf" else None}
         if pt and a.bbox is None and a.text_start is not None and a.raw_text and q.get("method") == "text_layer":
             text_box = _text_layer_box(ctx, v, pt.text, a)
         if pt and a.text_start is not None:
@@ -68,7 +70,7 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
         "available": True,
         "version": {"id": v.id, "document_id": v.document_id, "version_no": v.version_no, "filename": v.filename,
                     "sha256": v.sha256, "status": v.status, "superseded": v.status == "superseded"},
-        "anchor": {"id": a.id, "kind": a.kind, "page_index": a.page_index, "page_label": a.page_label,
+        "anchor": {"id": a.id, "kind": a.kind, "locator": a.locator, "page_index": a.page_index, "page_label": a.page_label,
                    "bbox": a.bbox or text_box, "bbox_source": "ocr" if a.bbox else ("text_layer" if text_box else None),
                    "text_start": a.text_start, "text_end": a.text_end, "sheet": a.sheet,
                    "row_number": a.row_number, "column": a.column, "cell_ref": a.cell_ref, "raw_text": a.raw_text,
