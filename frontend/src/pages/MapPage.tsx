@@ -3,7 +3,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import maplibregl, { type GeoJSONSource, type Map as MLMap, type StyleSpecification } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type FeatureCollection, type ProjectDetail, type ToolResult } from "../lib/api";
+import { API_BASE, api, type FeatureCollection, type ProjectDetail, type ToolResult } from "../lib/api";
 import { boundsOf, circlePolygon, geometryCoords, inBBox, normaliseBBox, type BBox } from "../lib/geo";
 import { useResource } from "../lib/hooks";
 import { useScope } from "../lib/session";
@@ -24,6 +24,12 @@ function blankStyle(): StyleSpecification {
 
 type Feature = FeatureCollection["features"][number];
 
+interface Overlay {
+  id: string; name: string; status: "valid" | "flagged"; crs: string | null; width: number; height: number;
+  corners: [number, number][] | null; image_url: string | null; issues: { code: string; message: string }[];
+  transform: { pipeline: string; accuracy_m: number | null } | null;
+}
+
 export default function MapPage() {
   const { pid } = useProject();
   const nav = useNavigate();
@@ -31,6 +37,8 @@ export default function MapPage() {
   const fc = useResource(() => api.get<FeatureCollection>(`/projects/${pid}/features`), [pid]);
   const project = useResource(() => api.get<ProjectDetail>(`/projects/${pid}`), [pid]);
   const missing = useResource(() => api.post<{ result: ToolResult }>(`/projects/${pid}/questions`, { tool: "missing_coordinates" }), [pid]);
+  const overlays = useResource(() => api.get<{ overlays: Overlay[] }>(`/projects/${pid}/overlays`), [pid]);
+  const [shownOverlays, setShownOverlays] = useState<Set<string>>(new Set());
   const box = useRef<HTMLDivElement>(null);
   const map = useRef<MLMap | null>(null);
   const [ready, setReady] = useState(false);
@@ -139,6 +147,23 @@ export default function MapPage() {
     }
   }, [area, ready, fc.data]);
 
+  /* ---- raster overlays (FR23): only validated ones, at their transformed corners, beneath the samples */
+  useEffect(() => {
+    const m = map.current;
+    if (!m || !ready) return;
+    for (const o of overlays.data?.overlays ?? []) {
+      const id = `overlay-${o.id}`;
+      const on = shownOverlays.has(o.id) && o.status === "valid" && o.corners && o.image_url;
+      if (on && !m.getSource(id)) {
+        m.addSource(id, { type: "image", url: `${API_BASE}${o.image_url}`, coordinates: o.corners as [[number, number], [number, number], [number, number], [number, number]] });
+        m.addLayer({ id, type: "raster", source: id, paint: { "raster-opacity": 0.75 } }, m.getLayer("boundary-fill") ? "boundary-fill" : undefined);
+      } else if (!on && m.getSource(id)) {
+        m.removeLayer(id);
+        m.removeSource(id);
+      }
+    }
+  }, [overlays.data, shownOverlays, ready]);
+
   /* ---- selection sync (map ↔ table) */
   const prevSel = useRef<string | null>(null);
   useEffect(() => {
@@ -214,6 +239,20 @@ export default function MapPage() {
               <h2>{area ? `Selected area · ${visible.length}` : `Mapped samples · ${features.length}`}</h2>
               {tableOnly && <button className="small" onClick={() => setTableOnly(false)}>Show map</button>}
             </div>
+            {!!overlays.data?.overlays.length && (
+              <fieldset className="stack" style={{ border: 0, padding: 0, margin: 0 }}>
+                <legend className="faint">Raster overlays</legend>
+                {overlays.data.overlays.map((o) => o.status === "valid" ? (
+                  <label key={o.id} className="check" title={`${o.crs} · ${o.width}×${o.height} px · ${o.transform?.pipeline ?? ""}`}>
+                    <input type="checkbox" checked={shownOverlays.has(o.id)} disabled={tableOnly} onChange={(e) => {
+                      const n = new Set(shownOverlays); if (e.target.checked) n.add(o.id); else n.delete(o.id); setShownOverlays(n);
+                    }} /> {o.name} <span className="faint">{o.crs}{o.transform?.accuracy_m ? ` · ±${o.transform.accuracy_m} m transform` : ""}</span>
+                  </label>
+                ) : (
+                  <div key={o.id} className="notice warn"><div><strong>{o.name} is not shown</strong>{o.issues.map((i) => i.message).join(" ")}</div></div>
+                ))}
+              </fieldset>
+            )}
             {basemapError && <div className="notice warn"><div><strong>Basemap unavailable</strong>{basemapError}. Project data is still shown.</div></div>}
             {fc.data && fc.data.unmapped_count > 0 && (
               <div className="notice info">

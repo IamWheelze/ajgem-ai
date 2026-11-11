@@ -489,3 +489,26 @@ class TargetEvidence(Base):
     linked_at: Mapped[datetime] = _ts()
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     removed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class RasterOverlay(Base):
+    """FR23: a georeferenced raster (GeoTIFF) validated for display on the map. Flagged overlays are never shown."""
+
+    __tablename__ = "raster_overlays"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
+    name: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(16))  # valid | flagged
+    crs: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    bounds: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [minx, miny, maxx, maxy] in crs, exact text
+    pixel_size: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    corners: Mapped[list | None] = mapped_column(JSON, nullable=True)  # WGS 84 [[lon, lat] x4] TL, TR, BR, BL
+    transform: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # pipeline and accuracy used for the corners
+    issues: Mapped[list] = mapped_column(JSON, default=list)
+    preview_key: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = _ts()
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))

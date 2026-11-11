@@ -46,7 +46,7 @@ from ..models import (
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import costs, deletion, processing, targets, projects, queries, records, uploads
+from ..services import costs, deletion, overlays, processing, targets, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
@@ -248,6 +248,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result["status"] == "quarantined":
             s.commit()
             raise ApiError("FILE_QUARANTINED", f"File quarantined by malware scan: {result['reason']}")
+        if result["status"] == "stored" and result["format"] == "geotiff" and "overlay_id" not in result:
+            o = overlays.create_from_version(s, ctx, a, result["version_id"])
+            result = dict(result, overlay_id=o.id, overlay_status=o.status)
+            s.get(UploadSession, uid).result = result
         if result["status"] == "stored" and result["format"] in ("pdf", "docx") and "job_id" not in result:
             job = processing.start_pdf_job(s, ctx, a, result["version_id"])
             result = dict(result, job_id=job.id)
@@ -501,6 +505,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(e.payload, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="export-{e.id}.zip"',
                                  "Cache-Control": "private, no-store"})
+
+    @app.get("/projects/{pid}/overlays")
+    def list_overlays(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"overlays": overlays.list_overlays(s, ctx, project_access(s, p, pid))}
+
+    @app.get("/overlays/{oid}/image.png")
+    def overlay_image(oid: str, token: str, u: str, x_user_id: str | None = Header(default=None),
+                      s: Session = Depends(db)):
+        if x_user_id is not None and x_user_id != u:
+            raise forbidden()
+        from ..models import RasterOverlay
+
+        p = load_principal(s, u)
+        a, _ = via(RasterOverlay, oid, s, p)
+        return Response(overlays.image(s, ctx, a, oid, token), media_type="image/png",
+                        headers={"Cache-Control": "private, no-store"})
 
     @app.post("/versions/{vid}/rerender")
     def rerender(vid: str, s: Session = Depends(db), p: Principal = Depends(principal)):

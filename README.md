@@ -13,7 +13,7 @@ deliberately not built yet. All P0 requirements now have an implementation. What
 
 ## What the slice does
 
-1. **Upload** (PDF, Word, CSV, XLSX or GeoPackage). Uploads are resumable and chunked, with SHA-256 verification, a rights
+1. **Upload** (PDF, Word, CSV, XLSX, GeoPackage or GeoTIFF). Uploads are resumable and chunked, with SHA-256 verification, a rights
    confirmation and a malware-scan hook. Stored originals are immutable and content-addressed
    per tenant. Duplicate bytes prompt reuse, and a replacement must be named explicitly.
 2. **Extract**. PDF text-layer pages become page- and offset-anchored assay candidates. Scanned pages

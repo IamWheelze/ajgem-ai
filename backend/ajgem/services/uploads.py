@@ -109,6 +109,10 @@ def detect_format(data: bytes, filename: str) -> str:
         return "pdf"
     from ..science.gpkg import SQLITE_MAGIC, is_geopackage
 
+    from ..science.geotiff import is_tiff
+
+    if is_tiff(data):
+        return "geotiff"
     if data.startswith(SQLITE_MAGIC):
         if is_geopackage(data):
             return "gpkg"
@@ -131,7 +135,7 @@ def detect_format(data: bytes, filename: str) -> str:
     head = data[:65536]
     if b"\x00" not in head and name.endswith((".csv", ".txt", ".tsv")):
         return "csv"
-    raise ApiError("INPUT_UNSUPPORTED", "File signature not recognised as PDF, XLSX, CSV or GeoPackage")
+    raise ApiError("INPUT_UNSUPPORTED", "File signature not recognised as PDF, Word, XLSX, CSV, GeoPackage or GeoTIFF")
 
 
 def complete(db: Session, ctx: Context, access: ProjectAccess, session_id: str, *,
