@@ -6,7 +6,7 @@ import { useNavigate } from "react-router-dom";
 import { API_BASE, api, type FeatureCollection, type ProjectDetail, type ToolResult } from "../lib/api";
 import { boundsOf, circlePolygon, geometryCoords, inBBox, normaliseBBox, type BBox } from "../lib/geo";
 import { useResource } from "../lib/hooks";
-import { useScope } from "../lib/session";
+import { useScope, useSession } from "../lib/session";
 import { useProject } from "../components/Layout";
 import { SourceDrawer, evidenceItems, type EvidenceItem } from "../components/SourceEvidence";
 import { Empty, ErrorNotice, Loading } from "../components/ui";
@@ -24,8 +24,15 @@ function blankStyle(): StyleSpecification {
 
 type Feature = FeatureCollection["features"][number];
 
+interface Georef {
+  crs: string; rmse: number | null; max_residual: number | null; points: number; limitations: string;
+  blocking: { code: string; message: string }[]; warnings: { code: string; message: string }[];
+  residuals: { label: string; residual: number }[];
+}
 interface Overlay {
   id: string; name: string; status: "valid" | "flagged"; crs: string | null; width: number; height: number;
+  control_points: { label: string; col: number; row: number; x: number; y: number }[] | null;
+  georef: Georef | null; georef_status: "none" | "draft" | "approved"; georef_by: string | null;
   corners: [number, number][] | null; image_url: string | null; issues: { code: string; message: string }[];
   transform: { pipeline: string; accuracy_m: number | null } | null;
 }
@@ -249,7 +256,8 @@ export default function MapPage() {
                     }} /> {o.name} <span className="faint">{o.crs}{o.transform?.accuracy_m ? ` · ±${o.transform.accuracy_m} m transform` : ""}</span>
                   </label>
                 ) : (
-                  <div key={o.id} className="notice warn"><div><strong>{o.name} is not shown</strong>{o.issues.map((i) => i.message).join(" ")}</div></div>
+                  <div key={o.id} className="notice warn"><div><strong>{o.name} is not shown</strong>{o.issues.map((i) => i.message).join(" ")}
+                    <GeorefPanel o={o} onChange={overlays.reload} /></div></div>
                 ))}
               </fieldset>
             )}
@@ -302,4 +310,62 @@ export default function MapPage() {
       {drawer && <SourceDrawer title={`Evidence · ${drawer.title}`} items={drawer.items} onClose={() => setDrawer(null)} />}
     </div>
   );
+}
+
+
+/** FR26: control points for a scanned map, the fit's residuals, and reviewer approval (a second person). */
+function GeorefPanel({ o, onChange }: { o: Overlay; onChange: () => void }) {
+  const { roles } = useProject();
+  const { me } = useSession();
+  const [open, setOpen] = useState(false);
+  const [crs, setCrs] = useState(o.georef?.crs ?? "EPSG:32632");
+  const [text, setText] = useState((o.control_points ?? []).map((p) => `${p.label},${p.col},${p.row},${p.x},${p.y}`).join("\n"));
+  const [err, setErr] = useState<unknown>();
+  const canEdit = roles.has("analyst") || roles.has("reviewer");
+  const g = o.georef;
+  const save = async () => {
+    setErr(undefined);
+    try {
+      const points = text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => {
+        const [label, col, row, x, y] = l.split(",").map((v) => v.trim());
+        return { label, col: Number(col), row: Number(row), x: Number(x), y: Number(y) };
+      });
+      await api.put(`/overlays/${o.id}/control-points`, { crs, points });
+      onChange();
+    } catch (e) { setErr(e); }
+  };
+  const approve = async () => { setErr(undefined); try { await api.post(`/overlays/${o.id}/approve-georeference`); onChange(); } catch (e) { setErr(e); } };
+  if (!canEdit && !g) return null;
+  return (
+    <div className="stack" style={{ marginTop: 6 }}>
+      <button type="button" className="link" onClick={() => setOpen((v) => !v)} aria-expanded={open}>{open ? "Hide georeferencing" : "Georeference from control points…"}</button>
+      {open && (
+        <div className="stack">
+          {o.image_url && <a href={`${API_BASE}${o.image_url}`} target="_blank" rel="noreferrer">Open the scan ({o.width}×{o.height} px) to read pixel positions ↗</a>}
+          <div className="faint">Enter at least 4 points spread towards the corners, one per line: <code>label, column, row, x, y</code>, with x/y read from a stated map source, never from OCR'd place names.</div>
+          {canEdit && <>
+            <label className="field">CRS of the map coordinates<input value={crs} onChange={(e) => setCrs(e.target.value)} /></label>
+            <label className="field">Control points<textarea rows={5} value={text} onChange={(e) => setText(e.target.value)} placeholder={"P1, 50, 40, 335500, 995600\nP2, 950, 60, 344500, 995400"} /></label>
+            <div><button className="small" onClick={save}>Fit</button></div>
+          </>}
+          {g && (
+            <div className="stack">
+              <div>{g.points} points · RMSE {g.rmse != null ? g.rmse.toFixed(2) : "—"} · max residual {g.max_residual != null ? g.max_residual.toFixed(2) : "—"} ({g.crs} units) · <StatusLabel s={o.georef_status} /></div>
+              {g.blocking.map((b) => <div key={b.code} className="faint"><code>{b.code}</code> {b.message}</div>)}
+              {g.warnings.map((w) => <div key={w.message} className="faint"><code>{w.code}</code> {w.message}</div>)}
+              <div className="faint">{g.limitations}</div>
+              {roles.has("reviewer") && o.georef_status === "draft" && !g.blocking.length && o.georef_by !== me?.id && (
+                <div><button className="small primary" onClick={approve}>Approve georeference</button></div>
+              )}
+            </div>
+          )}
+          <ErrorNotice error={err} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StatusLabel({ s }: { s: Overlay["georef_status"] }) {
+  return <span className={`badge ${s === "approved" ? "ok" : s === "draft" ? "warn" : ""}`}>{s === "draft" ? "awaiting review" : s}</span>;
 }

@@ -146,6 +146,19 @@ class EvidenceUnlinkIn(Strict):
     reason: str
 
 
+class ControlPointIn(Strict):
+    col: float
+    row: float
+    x: float
+    y: float
+    label: str = ""
+
+
+class ControlPointsIn(Strict):
+    crs: str
+    points: list[ControlPointIn]
+
+
 class ExportIn(Strict):
     format: Literal["csv", "geojson", "gpkg"]
     filters: dict[str, Any] = Field(default_factory=dict)

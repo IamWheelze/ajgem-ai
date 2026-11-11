@@ -94,7 +94,8 @@ def test_flagged_overlays_are_never_drawn(team, kwargs, code):
     up = _upload(team, make_tiff(**kwargs), f"{code}.tif")
     assert up["overlay_status"] == "flagged"
     o = [x for x in an.get(f"/projects/{pid}/overlays").json()["overlays"] if x["id"] == up["overlay_id"]][0]
-    assert o["corners"] is None and o["image_url"] is None and o["issues"][0]["code"] == code
+    # Never placed on the map; the preview stays viewable so control points can be read off it (FR26).
+    assert o["corners"] is None and o["status"] == "flagged" and o["issues"][0]["code"] == code
 
 
 def test_deleting_the_source_removes_the_overlay_and_its_preview(team, app):

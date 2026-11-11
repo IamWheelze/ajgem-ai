@@ -248,7 +248,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result["status"] == "quarantined":
             s.commit()
             raise ApiError("FILE_QUARANTINED", f"File quarantined by malware scan: {result['reason']}")
-        if result["status"] == "stored" and result["format"] == "geotiff" and "overlay_id" not in result:
+        if result["status"] == "stored" and result["format"] in ("geotiff", "image") and "overlay_id" not in result:
             o = overlays.create_from_version(s, ctx, a, result["version_id"])
             result = dict(result, overlay_id=o.id, overlay_status=o.status)
             s.get(UploadSession, uid).result = result
@@ -521,6 +521,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         a, _ = via(RasterOverlay, oid, s, p)
         return Response(overlays.image(s, ctx, a, oid, token), media_type="image/png",
                         headers={"Cache-Control": "private, no-store"})
+
+    @app.put("/overlays/{oid}/control-points")
+    def set_control_points(oid: str, body: S.ControlPointsIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        from ..models import RasterOverlay
+
+        a, _ = via(RasterOverlay, oid, s, p)
+        o = overlays.set_control_points(s, a, oid, body.crs, [x.model_dump() for x in body.points])
+        return overlays.view(o, ctx, p.user_id)
+
+    @app.post("/overlays/{oid}/approve-georeference")
+    def approve_georeference(oid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        from ..models import RasterOverlay
+
+        a, _ = via(RasterOverlay, oid, s, p)
+        return overlays.view(overlays.approve_georef(s, a, oid), ctx, p.user_id)
 
     @app.post("/versions/{vid}/rerender")
     def rerender(vid: str, s: Session = Depends(db), p: Principal = Depends(principal)):

@@ -113,6 +113,8 @@ def detect_format(data: bytes, filename: str) -> str:
 
     if is_tiff(data):
         return "geotiff"
+    if data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff"):
+        return "image"  # a scanned map without georeferencing: it can be georeferenced from control points (FR26)
     if data.startswith(SQLITE_MAGIC):
         if is_geopackage(data):
             return "gpkg"
@@ -135,7 +137,7 @@ def detect_format(data: bytes, filename: str) -> str:
     head = data[:65536]
     if b"\x00" not in head and name.endswith((".csv", ".txt", ".tsv")):
         return "csv"
-    raise ApiError("INPUT_UNSUPPORTED", "File signature not recognised as PDF, Word, XLSX, CSV, GeoPackage or GeoTIFF")
+    raise ApiError("INPUT_UNSUPPORTED", "File signature not recognised as PDF, Word, XLSX, CSV, GeoPackage, GeoTIFF, PNG or JPEG")
 
 
 def complete(db: Session, ctx: Context, access: ProjectAccess, session_id: str, *,

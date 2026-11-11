@@ -510,5 +510,13 @@ class RasterOverlay(Base):
     transform: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # pipeline and accuracy used for the corners
     issues: Mapped[list] = mapped_column(JSON, default=list)
     preview_key: Mapped[str] = mapped_column(String(500), default="")
+    # FR26 control-point georeferencing of scanned maps: points, the fit, and a second person's approval.
+    control_points: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    georef: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    georef_status: Mapped[str] = mapped_column(String(16), default="none", server_default="none")  # none|draft|approved
+    georef_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_raster_overlays_georef_by"), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_raster_overlays_approved_by"),
+                                                    nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
