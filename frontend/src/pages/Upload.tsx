@@ -95,7 +95,7 @@ export default function Upload() {
           >
             <p><strong>Drop a PDF report or certificate, CSV or XLSX table</strong></p>
             <p className="faint">Limit 100 MB · 500 PDF pages · 100,000 table rows. Macro-enabled workbooks and password-protected PDFs are rejected.</p>
-            <input type="file" accept=".pdf,.csv,.tsv,.txt,.xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} aria-label="Choose file" />
+            <input type="file" accept=".pdf,.csv,.tsv,.txt,.xlsx,.gpkg" onChange={(e) => setFile(e.target.files?.[0] ?? null)} aria-label="Choose file" />
             {file && <p><strong>{file.name}</strong> · {bytes(file.size)}</p>}
           </div>
           <label className="field">
@@ -201,7 +201,7 @@ function Outcome({ result, onReset }: { result: UploadResult; onReset: () => voi
         </div>
       </div>
       {result.format === "pdf" && result.job_id && <JobPanel jobId={result.job_id} />}
-      {(result.format === "csv" || result.format === "xlsx") && <ImportMapper versionId={result.version_id} format={result.format} />}
+      {(result.format === "csv" || result.format === "xlsx" || result.format === "gpkg") && <ImportMapper versionId={result.version_id} format={result.format} />}
       <p className="faint">Next: <Link to={`/p/${pid}/review`}>review the extracted candidates</Link>.</p>
     </div>
   );

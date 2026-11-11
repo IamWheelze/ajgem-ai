@@ -107,6 +107,12 @@ def detect_format(data: bytes, filename: str) -> str:
     name = filename.lower()
     if data.startswith(b"%PDF-"):
         return "pdf"
+    from ..science.gpkg import SQLITE_MAGIC, is_geopackage
+
+    if data.startswith(SQLITE_MAGIC):
+        if is_geopackage(data):
+            return "gpkg"
+        raise ApiError("INPUT_UNSUPPORTED", "SQLite file is not a GeoPackage")
     if data.startswith(b"PK\x03\x04"):
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as z:
@@ -123,7 +129,7 @@ def detect_format(data: bytes, filename: str) -> str:
     head = data[:65536]
     if b"\x00" not in head and name.endswith((".csv", ".txt", ".tsv")):
         return "csv"
-    raise ApiError("INPUT_UNSUPPORTED", "File signature not recognised as PDF, XLSX or CSV")
+    raise ApiError("INPUT_UNSUPPORTED", "File signature not recognised as PDF, XLSX, CSV or GeoPackage")
 
 
 def complete(db: Session, ctx: Context, access: ProjectAccess, session_id: str, *,

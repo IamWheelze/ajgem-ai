@@ -1,4 +1,4 @@
-"""Minimal OGC GeoPackage 1.4 writer for point layers (FR20 P1).
+"""Minimal OGC GeoPackage 1.4 writer for point layers (FR20 P1), and a reader for feature layers (FR23).
 
 Writes the required metadata tables (``gpkg_spatial_ref_sys``, ``gpkg_contents``,
 ``gpkg_geometry_columns``) and one feature table per layer, with geometries in the standard
@@ -34,9 +34,10 @@ def point_blob(lon: float, lat: float, srs_id: int = 4326) -> bytes:
 
 
 def _ident(name: str) -> str:
-    if not name.replace("_", "").isalnum():
+    """Quote an identifier. Names come from the file itself, so quotes are escaped rather than trusted."""
+    if not name or "\x00" in name:
         raise ValueError(f"unsafe identifier {name!r}")
-    return f'"{name}"'
+    return '"' + name.replace('"', '""') + '"'
 
 
 def write(layers: list[dict]) -> bytes:
@@ -101,3 +102,98 @@ def write(layers: list[dict]) -> bytes:
             return f.read()
     finally:
         os.unlink(path)
+
+
+# ---------------------------------------------------------------- reading (FR23)
+SQLITE_MAGIC = b"SQLite format 3\x00"
+_ENVELOPE_BYTES = {0: 0, 1: 32, 2: 48, 3: 48, 4: 64}
+_WKB_TYPES = {1: "POINT", 2: "LINESTRING", 3: "POLYGON", 4: "MULTIPOINT", 5: "MULTILINESTRING", 6: "MULTIPOLYGON",
+              7: "GEOMETRYCOLLECTION"}
+
+
+class GeoPackageError(ValueError):
+    pass
+
+
+def is_geopackage(data: bytes) -> bool:
+    """SQLite header with the GeoPackage application id ("GPKG" or the 1.0 "GP10")."""
+    return data.startswith(SQLITE_MAGIC) and len(data) >= 72 and data[68:72] in (b"GPKG", b"GP10", b"GP11")
+
+
+def parse_geometry(blob: bytes | None) -> dict:
+    """{"type", "x", "y"} for a point; {"type", "x": None, "y": None} for anything else or an empty geometry.
+
+    Coordinates are returned as the exact decimal text of the stored doubles (repr), never rounded.
+    """
+    if blob is None:
+        return {"type": None, "x": None, "y": None}
+    if len(blob) < 8 or blob[:2] != b"GP":
+        raise GeoPackageError("geometry is not GeoPackage binary")
+    flags = blob[3]
+    if flags & 0b00100000:
+        raise GeoPackageError("extended GeoPackage geometry types are not supported")
+    env = (flags >> 1) & 0b111
+    if env not in _ENVELOPE_BYTES:
+        raise GeoPackageError("invalid envelope indicator")
+    empty = bool(flags & 0b00010000)
+    wkb = blob[8 + _ENVELOPE_BYTES[env]:]
+    if len(wkb) < 5:
+        raise GeoPackageError("truncated WKB")
+    endian = "<" if wkb[0] == 1 else ">"
+    code = struct.unpack(endian + "I", wkb[1:5])[0]
+    base = code % 1000 if code < 1_000_000 else code & 0xFF
+    name = _WKB_TYPES.get(base, f"WKB_{code}")
+    if base != 1 or empty:
+        return {"type": name, "x": None, "y": None}
+    x, y = struct.unpack(endian + "dd", wkb[5:21])
+    if x != x or y != y:  # NaN: an empty point
+        return {"type": "POINT", "x": None, "y": None}
+    return {"type": "POINT", "x": repr(x), "y": repr(y)}
+
+
+def _connect(path: str) -> sqlite3.Connection:
+    # Untrusted file: read-only, immutable, and no SQL from the file's schema (views, triggers, defaults) is trusted.
+    con = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    con.execute("PRAGMA trusted_schema = OFF")
+    con.execute("PRAGMA query_only = ON")
+    return con
+
+
+def layers(path: str) -> list[dict]:
+    """Feature layers with their geometry column, geometry type and declared CRS."""
+    con = _connect(path)
+    try:
+        try:
+            rows = con.execute(
+                "SELECT c.table_name, g.column_name, g.geometry_type_name, s.organization, s.organization_coordsys_id, "
+                "s.srs_id FROM gpkg_contents c JOIN gpkg_geometry_columns g ON g.table_name = c.table_name "
+                "LEFT JOIN gpkg_spatial_ref_sys s ON s.srs_id = g.srs_id WHERE c.data_type = 'features' "
+                "ORDER BY c.table_name").fetchall()
+        except sqlite3.DatabaseError as e:
+            raise GeoPackageError(f"not a readable GeoPackage ({e})") from None
+        out = []
+        for table, geom_col, gtype, org, code, srs_id in rows:
+            crs = f"{org.upper()}:{code}" if org and code is not None and srs_id not in (-1, 0) else None
+            out.append({"name": table, "geometry_column": geom_col, "geometry_type": (gtype or "").upper(),
+                        "crs": crs, "srs_id": srs_id})
+        return out
+    finally:
+        con.close()
+
+
+def read_layer(path: str, layer: dict, max_rows: int) -> tuple[list[str], list[tuple[int, dict]]]:
+    """(attribute columns, [(fid, {column: text, "geometry": parsed})]) for one layer, in fid order."""
+    con = _connect(path)
+    try:
+        t = _ident(layer["name"])
+        info = con.execute(f"PRAGMA table_info({t})").fetchall()
+        pk = next((c[1] for c in info if c[5] == 1), None)
+        attrs = [c[1] for c in info if c[1] not in (pk, layer["geometry_column"])]
+        cols = ", ".join([_ident(pk) if pk else "rowid", _ident(layer["geometry_column"])] + [_ident(a) for a in attrs])
+        out = []
+        for row in con.execute(f"SELECT {cols} FROM {t} ORDER BY 1 LIMIT ?", (max_rows + 1,)):
+            fid, geom, *vals = row
+            out.append((int(fid), {"geometry": geom, **{a: v for a, v in zip(attrs, vals)}}))
+        return attrs, out
+    finally:
+        con.close()

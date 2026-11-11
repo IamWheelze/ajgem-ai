@@ -79,6 +79,15 @@ def read_table_isolated(ctx: Context, v: DocumentVersion, mapping: dict):
 
 
 def read_table(data, fmt: str, mapping: dict, max_rows: int) -> tuple[list[str], list[tuple[int, dict[str, Cell]]], dict]:
+    data_path = None if isinstance(data, (bytes, bytearray)) else str(data)
+    temp_path = None
+    if fmt == "gpkg" and data_path is None:  # SQLite needs a file
+        import tempfile
+
+        fd, temp_path = tempfile.mkstemp(suffix=".gpkg")
+        with open(fd, "wb") as f:
+            f.write(data)
+        data_path = temp_path
     if not isinstance(data, (bytes, bytearray)):
         data = Path(data).read_bytes()
     header_row = int(mapping.get("header_row", 1))
@@ -145,11 +154,71 @@ def read_table(data, fmt: str, mapping: dict, max_rows: int) -> tuple[list[str],
                     cells[header[j]] = Cell(ref, header[j], _xlsx_text(c.value))
             if any(cl.raw not in (None, "") or cl.issue for cl in cells.values()):
                 out.append((i, cells))
+    elif fmt == "gpkg":
+        try:
+            header, out = _read_gpkg(data_path, mapping, max_rows, meta)
+        finally:
+            if temp_path:
+                Path(temp_path).unlink(missing_ok=True)
     else:
-        raise ApiError("INPUT_UNSUPPORTED", "Structured import supports CSV and XLSX")
+        raise ApiError("INPUT_UNSUPPORTED", "Structured import supports CSV, XLSX and GeoPackage")
     if len(out) > max_rows:
         raise ApiError("INPUT_UNSUPPORTED", f"{len(out)} rows exceeds the {max_rows}-row import limit")
     return header, out, meta
+
+
+GEOMETRY_X, GEOMETRY_Y = "geometry_x", "geometry_y"
+
+
+def _read_gpkg(path: str, mapping: dict, max_rows: int, meta: dict):
+    """One feature layer as rows. The point geometry becomes two columns, as stored, in the layer's CRS (FR23):
+    nothing is reprojected, and non-point geometry is flagged rather than reduced to a point."""
+    from ..science import gpkg
+
+    try:
+        found = gpkg.layers(path)
+    except gpkg.GeoPackageError as e:
+        raise ApiError("INPUT_UNSUPPORTED", str(e)) from None
+    if not found:
+        raise ApiError("INPUT_UNSUPPORTED", "The GeoPackage has no feature layers")
+    meta["sheets"] = [lyr["name"] for lyr in found]
+    meta["layers"] = found
+    name = mapping.get("sheet") or found[0]["name"]
+    layer = next((lyr for lyr in found if lyr["name"] == name), None)
+    if layer is None:
+        raise ApiError("INPUT_INVALID", f"Layer '{name}' not found", details={"sheets": meta["sheets"]})
+    meta.update(sheet=name, layer_crs=layer["crs"], geometry_type=layer["geometry_type"])
+    attrs, features = gpkg.read_layer(path, layer, max_rows)
+    header = attrs + [GEOMETRY_X, GEOMETRY_Y]
+    out = []
+    for fid, row in features:
+        ref = f"fid {fid}"
+        cells = {a: Cell(f"{ref}.{a}", a, _xlsx_text(row[a])) for a in attrs}
+        try:
+            g = gpkg.parse_geometry(row["geometry"])
+            gx = Cell(f"{ref}.geometry", GEOMETRY_X, g["x"])
+            gy = Cell(f"{ref}.geometry", GEOMETRY_Y, g["y"])
+            if g["type"] not in (None, "POINT"):
+                gx.issue = issue("GEOMETRY_UNSUPPORTED", "warning", GEOMETRY_X,
+                                 f"Feature {fid} is a {g['type']}; only points become sample locations, so the "
+                                 "location is left empty")
+        except gpkg.GeoPackageError as e:
+            gx, gy = Cell(f"{ref}.geometry", GEOMETRY_X, None), Cell(f"{ref}.geometry", GEOMETRY_Y, None)
+            gx.issue = issue("GEOMETRY_INVALID", "warning", GEOMETRY_X, f"Feature {fid}: {e}; location left empty")
+        cells[GEOMETRY_X], cells[GEOMETRY_Y] = gx, gy
+        out.append((fid, cells))
+    return header, out
+
+
+def _check_layer_crs(meta: dict, mapping: dict) -> None:
+    """FR23: a GeoPackage layer's coordinates are imported in the CRS the layer declares, never silently reprojected.
+    A mapping that names another source CRS would mislabel them, so it is refused."""
+    declared = meta.get("layer_crs")
+    given = ((mapping.get("crs") or {}).get("source_crs") or "").strip().upper()
+    if declared and given and given != declared.upper():
+        raise ApiError("INPUT_INVALID", f"Layer '{meta.get('sheet')}' declares {declared}. Its coordinates are imported "
+                                        f"as stored, without reprojection, so the source CRS must be {declared}.",
+                       details={"layer_crs": declared, "given": given})
 
 
 def inspect(db: Session, ctx: Context, access: ProjectAccess, version_id: str, sheet: str | None = None,
@@ -262,6 +331,7 @@ def preview(db: Session, ctx: Context, access: ProjectAccess, version_id: str, m
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     header, rows, meta = read_table_isolated(ctx, v, mapping)
     _validate_mapping(mapping, header)
+    _check_layer_crs(meta, mapping)
     reg = registry_for(db, access.principal.organisation_id)
     cfg = current_config(db, access.project.id)
     counts = {"rows": len(rows), "samples": 0, "assays": 0, "certificates": set(), "critical": 0, "warning": 0}
