@@ -46,7 +46,7 @@ from ..models import (
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import costs, deletion, overlays, processing, targets, projects, queries, records, uploads
+from ..services import costs, deletion, drilling, overlays, processing, targets, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
@@ -536,6 +536,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         a, _ = via(RasterOverlay, oid, s, p)
         return overlays.view(overlays.approve_georef(s, a, oid), ctx, p.user_id)
+
+    @app.post("/projects/{pid}/drilling/validate")
+    def drilling_validate(pid: str, body: S.DrillingIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return drilling.validate_view(s, ctx, project_access(s, p, pid), body.spec)
+
+    @app.post("/projects/{pid}/drilling/composite")
+    def drilling_composite(pid: str, body: S.DrillingIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return drilling.composite(s, ctx, project_access(s, p, pid), body.spec, body.params)
+
+    @app.post("/projects/{pid}/drilling/trajectory")
+    def drilling_trajectory(pid: str, body: S.DrillingIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return drilling.trajectory(s, ctx, project_access(s, p, pid), body.spec, body.params)
 
     @app.post("/versions/{vid}/rerender")
     def rerender(vid: str, s: Session = Depends(db), p: Principal = Depends(principal)):

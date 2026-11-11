@@ -159,6 +159,11 @@ class ControlPointsIn(Strict):
     points: list[ControlPointIn]
 
 
+class DrillingIn(Strict):
+    spec: dict
+    params: dict = Field(default_factory=dict)
+
+
 class ExportIn(Strict):
     format: Literal["csv", "geojson", "gpkg"]
     filters: dict[str, Any] = Field(default_factory=dict)
