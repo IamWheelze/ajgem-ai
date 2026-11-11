@@ -51,7 +51,7 @@ function Group({ g, onDone, onEvidence }: { g: ConflictView; onDone: () => void;
         </div>
         <StatusBadge status={g.status} label={g.status === "open" && g.governing_record_id ? "re-opened (previous selection still governs)" : undefined} />
       </div>
-      <div className="table-wrap">
+      <div className="table-wrap" tabIndex={0}>
         <table className="data">
           <thead><tr>{can("review") && <th>Governing</th>}<th>Certificate</th><th className="num">Result</th><th>Record status</th><th>Revision</th><th>Evidence</th></tr></thead>
           <tbody>

@@ -16,6 +16,7 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import ConflictGroup, DocumentVersion, Export, PageText, Record, RecordRevision, SourceAnchor
 from ..science.analytes import ANALYTE_REGISTRY_VERSION
+from ..science import gpkg
 from ..science.csvsafe import escape_cell
 from ..science.units import UNIT_REGISTRY_VERSION
 from . import audit
@@ -128,16 +129,82 @@ def source_bytes(db: Session, ctx: Context, access: ProjectAccess, version_id: s
 
 
 # ---------------------------------------------------------------- exports
-def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: dict, purpose: str) -> Export:
+def _check_request(access: ProjectAccess, fmt: str, filters: dict, purpose: str) -> None:
     if not access.membership.can_export:
         raise ApiError("AUTH_FORBIDDEN", "Export requires a separate export grant")
-    if fmt not in {"csv", "geojson"}:
-        raise ApiError("INPUT_UNSUPPORTED", "Formats: csv, geojson (GeoPackage is P1)")
+    if fmt not in {"csv", "geojson", "gpkg"}:
+        raise ApiError("INPUT_UNSUPPORTED", "Formats: csv, geojson, gpkg")
     if not purpose or not purpose.strip():
         raise ApiError("INPUT_INVALID", "An export purpose is required")
     allowed = {"analyte"}
     if set(filters) - allowed:
         raise ApiError("INPUT_INVALID", f"Unknown filters: {sorted(set(filters) - allowed)}")
+
+
+def _estimated_rows(db: Session, project_id: str) -> int:
+    return db.scalar(select(func.count()).select_from(Record).where(
+        Record.project_id == project_id, Record.approved_revision_no.is_not(None),
+        Record.kind.in_(["assay", "sample"]))) or 0
+
+
+def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: dict, purpose: str) -> Export:
+    """Build an export now, or, with the worker executor and a large project, queue it as a job (FR20)."""
+    _check_request(access, fmt, filters, purpose)
+    pid = access.project.id
+    estimate = _estimated_rows(db, pid)
+    if ctx.settings.job_executor != "inline" and estimate > ctx.settings.export_inline_rows:
+        from ..models import Job, JobTask
+
+        job = Job(organisation_id=access.project.organisation_id, project_id=pid, version_id=None, kind="export",
+                  state="queued", created_by=access.principal.user_id, cost_counters={"estimated_rows": estimate},
+                  manifest={"units": [{"unit": "export", "state": "queued", "attempts": 0, "candidates": 0,
+                                       "issues": []}]})
+        db.add(job)
+        db.flush()
+        db.add(JobTask(job_id=job.id, unit_key="export"))
+        exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
+                     filters=filters, payload=b"", state="queued", job_id=job.id, created_by=access.principal.user_id,
+                     manifest={"state": "queued", "export_format": fmt, "purpose": purpose, "filters": filters,
+                               "estimated_rows": estimate,
+                               "note": "Large export: it is being prepared by a background worker."})
+        db.add(exp)
+        db.flush()
+        job.manifest = {**job.manifest, "export_id": exp.id}
+        audit.record(db, access.principal, "export.create", "export", exp.id, project_id=pid,
+                     detail={"format": fmt, "purpose": purpose, "queued": True, "estimated_rows": estimate})
+        return exp
+    payload, manifest, n = _build(db, ctx, access, fmt, filters, purpose)
+    exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
+                 filters=filters, manifest=manifest, payload=payload, created_by=access.principal.user_id)
+    db.add(exp)
+    db.flush()
+    audit.record(db, access.principal, "export.create", "export", exp.id, project_id=pid,
+                 detail={"format": fmt, "records": n, "purpose": purpose})
+    return exp
+
+
+def build_queued(db: Session, ctx: Context, access: ProjectAccess, export_id: str) -> Export:
+    """Worker side: build a queued export as the person who asked for it, re-checking their export grant."""
+    exp = db.get(Export, export_id)
+    if exp is None or exp.project_id != access.project.id:
+        raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
+    if exp.state == "ready":
+        return exp  # idempotent: a retried unit never rebuilds
+    try:
+        _check_request(access, exp.format, exp.filters or {}, exp.purpose)
+    except ApiError as e:
+        exp.state = "failed"
+        exp.manifest = {**(exp.manifest or {}), "state": "failed", "error": e.message}
+        raise
+    payload, manifest, n = _build(db, ctx, access, exp.format, exp.filters or {}, exp.purpose)
+    exp.payload, exp.manifest, exp.state = payload, {**manifest, "state": "ready"}, "ready"
+    audit.record(db, access.principal, "export.ready", "export", exp.id, project_id=exp.project_id,
+                 detail={"format": exp.format, "records": n})
+    return exp
+
+
+def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: dict, purpose: str
+           ) -> tuple[bytes, dict, int]:
     exact_coords = access.membership.can_export_exact_coordinates or bool(access.roles & {"admin", "analyst", "reviewer"})
     pid = access.project.id
     sample_pairs = with_revisions(db, pid, "sample")
@@ -231,6 +298,15 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
     if fmt == "csv":
         data_name, data = "data.csv", as_csv(rows, EXPORT_COLUMNS)
         samples_name, samples_data = "samples.csv", as_csv(sample_rows, SAMPLE_COLUMNS)
+    elif fmt == "gpkg":
+        # One GeoPackage with both layers; every attribute is TEXT so exact decimals stay exact.
+        data_name, data = "data.gpkg", gpkg.write([
+            {"name": "assays", "description": "Approved assay results (reported and normalised)",
+             "columns": [c for c in EXPORT_COLUMNS], "rows": rows},
+            {"name": "samples", "description": "Approved samples with raw and normalised coordinates",
+             "columns": [c for c in SAMPLE_COLUMNS], "rows": sample_rows},
+        ])
+        samples_name, samples_data = None, b""
     else:
         data_name, data = "data.geojson", as_geojson(rows, EXPORT_COLUMNS)
         samples_name, samples_data = "samples.geojson", as_geojson(sample_rows, SAMPLE_COLUMNS)
@@ -256,21 +332,64 @@ def create_export(db: Session, ctx: Context, access: ProjectAccess, fmt: str, fi
                      "rights_statement": v.rights_statement} for v in versions.values() if v],
         "attribution": "Source documents remain subject to their original rights; no portability beyond those rights is implied.",
         "data_file": data_name, "data_sha256": hashlib.sha256(data).hexdigest(),
-        "samples_file": samples_name, "samples_sha256": hashlib.sha256(samples_data).hexdigest(),
-        "columns": {data_name: EXPORT_COLUMNS, samples_name: SAMPLE_COLUMNS},
+        **({"samples_file": samples_name, "samples_sha256": hashlib.sha256(samples_data).hexdigest(),
+            "columns": {data_name: EXPORT_COLUMNS, samples_name: SAMPLE_COLUMNS}} if samples_name else
+           {"columns": {f"{data_name}:assays": EXPORT_COLUMNS, f"{data_name}:samples": SAMPLE_COLUMNS}}),
     }
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(data_name, data)
-        z.writestr(samples_name, samples_data)
+        if samples_name:
+            z.writestr(samples_name, samples_data)
+        z.writestr("evidence_summary.md", evidence_summary(access.project.name, purpose, filters, rows, sample_rows,
+                                                           list(versions.values()), manifest))
         z.writestr("manifest.json", json.dumps(manifest, indent=1, default=str))
-    exp = Export(organisation_id=access.project.organisation_id, project_id=pid, format=fmt, purpose=purpose,
-                 filters=filters, manifest=manifest, payload=zbuf.getvalue(), created_by=access.principal.user_id)
-    db.add(exp)
-    db.flush()
-    audit.record(db, access.principal, "export.create", "export", exp.id, project_id=pid,
-                 detail={"format": fmt, "records": len(rows), "purpose": purpose})
-    return exp
+    return zbuf.getvalue(), manifest, len(rows)
+
+
+def evidence_summary(project: str, purpose: str, filters: dict, rows: list[dict], sample_rows: list[dict],
+                     versions: list, manifest: dict) -> str:
+    """FR20: a human-readable, source-linked summary of what the export holds. Counts and references only;
+    it states what was reviewed and from where, and makes no geological interpretation."""
+    by_source: dict[str | None, list[dict]] = {}
+    for r in rows:
+        by_source.setdefault(r["source_version_id"], []).append(r)
+    analytes: dict[str, dict] = {}
+    for r in rows:
+        a = analytes.setdefault(r["analyte"] or "unknown", {"n": 0, "censored": 0, "units": set()})
+        a["n"] += 1
+        a["censored"] += r["comparator"] not in (None, "EQ")
+        a["units"].add(r["unit"] or "?")
+    unresolved = manifest.get("unresolved", {})
+    lines = [
+        f"# Evidence summary: {project}", "",
+        f"Purpose: {purpose}  ",
+        f"Created: {manifest['created_at']}  ",
+        f"Filters: {json.dumps(filters) if filters else 'none'}  ",
+        "Scope: approved record revisions only. This summary lists reviewed records and where they came from; it "
+        "does not estimate resources or reserves, and it contains no geological interpretation.", "",
+        "## Contents", "",
+        f"- {len(rows)} approved assay results, {len(sample_rows)} approved samples",
+        f"- {manifest.get('unmapped_count', 0)} assay rows without an approved location"
+        + (" (coordinates withheld for this export)" if manifest.get("coordinates_withheld") else ""),
+        f"- Not included and still open: {unresolved.get('open_conflicts', 0)} unresolved conflicts, "
+        f"{unresolved.get('records_needing_review', 0)} records awaiting review, "
+        f"{unresolved.get('stale_records', 0)} stale records", "",
+        "## Results by analyte", "",
+        "| Analyte | Results | Censored (< or >) | Units as reported |", "|---|---|---|---|",
+    ]
+    for code in sorted(analytes):
+        a = analytes[code]
+        lines.append(f"| {code} | {a['n']} | {a['censored']} | {', '.join(sorted(a['units']))} |")
+    lines += ["", "## Sources", "", "Every row in the data files names its record, revision and source anchors "
+              "(`anchor_refs`: version id with page and character range, or sheet and cell).", "",
+              "| Source | Version id | SHA-256 | Status | Results |", "|---|---|---|---|---|"]
+    for v in sorted(versions, key=lambda v: v.filename):
+        lines.append(f"| {v.filename} | `{v.id}` | `{v.sha256}` | {v.status} | {len(by_source.get(v.id, []))} |")
+    if by_source.get(None):
+        lines.append(f"| (entered manually) | | | | {len(by_source[None])} |")
+    lines += ["", "Rights: " + manifest.get("attribution", ""), ""]
+    return "\n".join(lines)
 
 
 def _anchor_ref(a: SourceAnchor) -> str:
@@ -288,5 +407,9 @@ def download_export(db: Session, access: ProjectAccess, export_id: str) -> Expor
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if (e.manifest or {}).get("revoked"):
         raise ApiError("EVIDENCE_DELETED", e.manifest["revoked"]["message"])
+    if e.state == "queued":
+        raise ApiError("CONFLICT", "This export is still being prepared; try again when it is ready")
+    if e.state == "failed":
+        raise ApiError("CONFLICT", f"This export could not be built: {(e.manifest or {}).get('error', 'unknown error')}")
     audit.record(db, access.principal, "export.download", "export", e.id, project_id=e.project_id)
     return e

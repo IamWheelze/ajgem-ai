@@ -30,6 +30,8 @@ PERMISSIONS: dict[str, set[str]] = {
     "records.review": {"reviewer"},
     "conflicts.resolve": {"reviewer"},
     "query.run": ROLES,
+    "targets.edit": {"analyst", "reviewer"},  # FR18: geologists work as analysts or reviewers
+    "checklists.manage": {"admin", "reviewer"},
     "audit.read": {"admin"},
 }
 

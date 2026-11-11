@@ -50,7 +50,7 @@ def test_exports_carry_raw_and_normalised_values_crs_and_pipeline(team):
     _approve_all(team)
 
     z = _export(an, pid)
-    assert set(z.namelist()) == {"data.csv", "samples.csv", "manifest.json"}
+    assert set(z.namelist()) == {"data.csv", "samples.csv", "evidence_summary.md", "manifest.json"}
     man = json.loads(z.read("manifest.json"))
     assert man["crs"]["normalised"].startswith("EPSG:4326") and "raw_and_normalised" in man
     assert man["sample_count"] == 3 and man["columns"]["samples.csv"][0] == "sample_id"
@@ -90,3 +90,54 @@ def test_raw_coordinates_are_withheld_with_the_normalised_ones(team):
         for row in _rows(z, name):
             assert row["lon"] == row["lat"] == row["raw_x"] == row["raw_y"] == "" and row["coordinate_status"] == "withheld"
             assert row["source_crs"] == "EPSG:32632"  # the CRS itself is not sensitive
+
+
+def test_geopackage_export_is_valid_and_exact(team, tmp_path):
+    """FR20 P1: a GeoPackage with assay and sample layers; values stay exact text; readable by GDAL when present."""
+    import shutil
+    import sqlite3
+    import subprocess
+
+    an, pid = team["analyst"], team["pid"]
+    v = an.upload(pid, CSV, "dated.csv").json()
+    m = {**CSV_MAPPING, "columns": {"sample_id": "SampleID", "collection_date": "Date", "x": "Easting", "y": "Northing"},
+         "analytes": [{"column": "Li_ppm", "analyte": "Li", "unit": "ppm"}]}
+    pv = an.post(f"/versions/{v['version_id']}/import-previews", json={"mapping": m}).json()
+    an.post(f"/imports/{pv['id']}/commit", json={"preview_hash": pv["preview_hash"]})
+    _approve_all(team)
+    z = _export(an, pid, "gpkg")
+    assert set(z.namelist()) == {"data.gpkg", "evidence_summary.md", "manifest.json"}
+    path = tmp_path / "data.gpkg"
+    path.write_bytes(z.read("data.gpkg"))
+    con = sqlite3.connect(path)
+    assert con.execute("PRAGMA application_id").fetchone()[0] == 0x47504B47
+    assert {r[0] for r in con.execute("SELECT table_name FROM gpkg_contents")} == {"assays", "samples"}
+    assert con.execute("SELECT geometry_type_name, srs_id FROM gpkg_geometry_columns WHERE table_name='assays'").fetchone() == ("POINT", 4326)
+    kw2 = con.execute('SELECT result_raw, comparator, value, unit, raw_x, source_crs, typeof(value) FROM assays '
+                      "WHERE sample_id='KW-2'").fetchone()
+    assert kw2 == ("<100", "LT", "100", "ppm", "335020", "EPSG:32632", "text")
+    geom = con.execute("SELECT geom FROM samples WHERE sample_id='KW-1'").fetchone()[0]
+    assert geom[:2] == b"GP" and len(geom) == 8 + 21
+    con.close()
+    if shutil.which("ogrinfo"):  # independent reader: GDAL must open both layers with their features
+        out = subprocess.run(["ogrinfo", "-ro", "-al", "-so", str(path)], capture_output=True, text=True, check=True).stdout
+        assert "Layer name: assays" in out and "Layer name: samples" in out and "Feature Count: 2" in out
+        assert "WGS 84" in out
+        val = subprocess.run(["ogrinfo", "-ro", "-q", str(path), "-sql", "SELECT value FROM assays WHERE sample_id='KW-2'"],
+                             capture_output=True, text=True, check=True).stdout
+        assert "value (String) = 100" in val
+
+
+def test_every_export_carries_an_evidence_summary(team):
+    an, pid = team["analyst"], team["pid"]
+    v = an.upload(pid, CSV, "dated.csv").json()
+    m = {**CSV_MAPPING, "columns": {"sample_id": "SampleID", "x": "Easting", "y": "Northing"},
+         "analytes": [{"column": "Li_ppm", "analyte": "Li", "unit": "ppm"}]}
+    pv = an.post(f"/versions/{v['version_id']}/import-previews", json={"mapping": m}).json()
+    an.post(f"/imports/{pv['id']}/commit", json={"preview_hash": pv["preview_hash"]})
+    _approve_all(team)
+    md = _export(an, pid).read("evidence_summary.md").decode()
+    assert md.startswith("# Evidence summary: Kano Pegmatite")
+    assert "| Li | 2 | 1 | ppm |" in md  # two results, one censored
+    assert "dated.csv" in md and v["version_id"] in md
+    assert "does not estimate resources" in md

@@ -151,7 +151,7 @@ export default function Upload() {
       <section className="card">
         <div className="card-head"><h2>Source documents</h2></div>
         {!docs.data?.documents.length ? <Empty>No documents yet.</Empty> : (
-          <div className="table-wrap">
+          <div className="table-wrap" tabIndex={0}>
             <table className="data">
               <thead><tr><th>Document</th><th>Version</th><th>Format</th><th>Status</th><th>Scan</th><th className="num">Size</th><th>SHA-256</th><th>Uploaded</th>{roles.has("admin") && <th />}</tr></thead>
               <tbody>
@@ -224,7 +224,7 @@ export function JobPanel({ jobId }: { jobId: string }) {
       </div>
       <ErrorNotice error={err} />
       <BudgetPanel job={j} onChange={job.setData} />
-      <div className="table-wrap" style={{ maxHeight: 320 }}>
+      <div className="table-wrap" tabIndex={0} style={{ maxHeight: 320 }}>
         <table className="data">
           <thead><tr><th>Unit</th><th>State</th><th className="num">Attempts</th><th className="num">Candidates</th><th>Issues</th></tr></thead>
           <tbody>

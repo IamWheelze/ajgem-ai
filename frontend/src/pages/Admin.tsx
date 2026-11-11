@@ -198,7 +198,7 @@ function UsageAndBudget() {
   return (
     <section className="card">
       <div className="card-head"><h2>Usage and budget</h2><span className="faint">since {when(d.period_start)}</span></div>
-      <div className="table-wrap">
+      <div className="table-wrap" tabIndex={0}>
         <table className="data">
           <thead><tr><th>Category</th><th>This month</th><th>What it counts</th></tr></thead>
           <tbody>{rows.map(([a, b, c]) => <tr key={a}><td>{a}</td><td>{b}</td><td className="faint">{c}</td></tr>)}</tbody>
@@ -333,7 +333,7 @@ function Audit() {
         <input placeholder="filter action (e.g. record.approve)" value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: 260 }} />
       </div>
       {a.loading && !a.data ? <Loading /> : (
-        <div className="table-wrap" style={{ maxHeight: 420 }}>
+        <div className="table-wrap" tabIndex={0} style={{ maxHeight: 420 }}>
           <table className="data">
             <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Entity</th><th>Before → after</th><th>Detail</th></tr></thead>
             <tbody>

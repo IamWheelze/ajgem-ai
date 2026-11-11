@@ -6,11 +6,11 @@
   --border-strong: #c4bfb2;
   --text: #1f2420;
   --text-2: #565c55;
-  --text-3: #80857d;
+  --text-3: #636860; /* 4.9:1 or better on every light surface (WCAG AA) */
   --accent: #2f6f62;
   --accent-ink: #ffffff;
   --accent-soft: #e2efeb;
-  --ok: #2e7d4f;
+  --ok: #256a42; /* 5.6:1 on --ok-soft (WCAG AA for badge text) */
   --ok-soft: #e3f2e8;
   --warn: #9a6200;
   --warn-soft: #fbf0d9;
@@ -41,7 +41,7 @@
     --border-strong: #434a45;
     --text: #e7e9e4;
     --text-2: #a9afa7;
-    --text-3: #7f867e;
+    --text-3: #959c94; /* 5.3:1 or better on every dark surface (WCAG AA) */
     --accent: #6cc2ad;
     --accent-ink: #0d1a16;
     --accent-soft: #1d3530;
@@ -72,7 +72,7 @@
   --border-strong: #434a45;
   --text: #e7e9e4;
   --text-2: #a9afa7;
-  --text-3: #7f867e;
+  --text-3: #959c94; /* 5.3:1 or better on every dark surface (WCAG AA) */
   --accent: #6cc2ad;
   --accent-ink: #0d1a16;
   --accent-soft: #1d3530;
@@ -314,3 +314,6 @@ ol.sources { margin: 0; padding-left: 20px; display: flex; flex-direction: colum
 
 /* deletion */
 .danger-box { border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--border)); background: var(--bad-soft); border-radius: var(--radius); padding: 12px 14px; }
+
+/* Two side-by-side cards that stack on narrow screens (Targets). */
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; align-items: start; }

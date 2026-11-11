@@ -31,6 +31,7 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import (
     AnswerSnapshot,
+    Checklist,
     AuditEvent,
     ConflictGroup,
     DeletionRequest,
@@ -46,6 +47,8 @@ from ..models import (
     ProjectConfigRevision,
     Record,
     RecordRevision,
+    Target,
+    TargetEvidence,
     SourceAnchor,
     UploadSession,
 )
@@ -122,6 +125,9 @@ def _purge_versions(db: Session, ctx: Context, admin_sessions, access: ProjectAc
             g.version += 1
 
     if records:
+        # Target links to deleted records go with them (the target keeps its other evidence).
+        counts["target_links"] = db.execute(
+            delete(TargetEvidence).where(TargetEvidence.record_id.in_(records))).rowcount
         counts["record_revisions"] = db.execute(
             delete(RecordRevision).where(RecordRevision.record_id.in_(records))).rowcount
         counts["records"] = db.execute(delete(Record).where(Record.id.in_(records))).rowcount
@@ -246,6 +252,12 @@ def delete_project(db: Session, ctx: Context, admin_sessions, access: ProjectAcc
     extra = {
         "records_other": 0, "answers_deleted": 0, "exports_deleted": 0, "conflict_groups": 0, "config_revisions": 0,
     }
+    # Targets and their evidence links reference records and checklists, so they go first.
+    scrub_ids |= set(db.scalars(select(Target.id).where(Target.project_id == p.id)))
+    scrub_ids |= set(db.scalars(select(Checklist.id).where(Checklist.project_id == p.id)))
+    db.execute(delete(TargetEvidence).where(TargetEvidence.project_id == p.id))
+    extra["targets"] = db.execute(delete(Target).where(Target.project_id == p.id)).rowcount
+    extra["checklists"] = db.execute(delete(Checklist).where(Checklist.project_id == p.id)).rowcount
     # Conflict groups reference records (governing result), so they go first.
     extra["conflict_groups"] = db.execute(delete(ConflictGroup).where(ConflictGroup.project_id == p.id)).rowcount
     rest = list(db.scalars(select(Record.id).where(Record.project_id == p.id)))

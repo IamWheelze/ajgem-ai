@@ -7,7 +7,7 @@ import { useProject } from "../components/Layout";
 import { Empty, ErrorNotice, StatusBadge } from "../components/ui";
 import { JobPanel } from "./Upload";
 
-interface ExportRow { id: string; format: string; purpose: string; created_at: string; manifest: Record<string, unknown> & { record_count?: number; unmapped_count?: number; coordinates_withheld?: boolean; unresolved?: Record<string, number>; data_sha256?: string; revoked?: { message: string; deletion_request_id: string } } }
+interface ExportRow { id: string; format: string; purpose: string; created_at: string; state?: "ready" | "queued" | "failed"; job_id?: string | null; manifest: Record<string, unknown> & { record_count?: number; unmapped_count?: number; coordinates_withheld?: boolean; unresolved?: Record<string, number>; data_sha256?: string; revoked?: { message: string; deletion_request_id: string } } }
 
 export default function Jobs() {
   const { pid, can } = useProject();
@@ -47,14 +47,16 @@ export default function Jobs() {
 function Exports() {
   const { pid, can } = useProject();
   const list = useResource(() => api.get<{ exports: ExportRow[] }>(`/projects/${pid}/exports`), [pid]);
-  const [fmt, setFmt] = useState<"csv" | "geojson">("csv");
+  // Large exports are built by a background worker; refresh until they are ready.
+  usePolling((list.data?.exports ?? []).some((e) => e.state === "queued"), list.reload, 3000);
+  const [fmt, setFmt] = useState<"csv" | "geojson" | "gpkg">("csv");
   const [analyte, setAnalyte] = useState("");
   const [purpose, setPurpose] = useState("");
   const [view, setView] = useState<ExportRow | null>(null);
   const create = useAction(async () => {
-    const r = await api.post<{ id: string; manifest: ExportRow["manifest"] }>(`/projects/${pid}/exports`, { format: fmt, purpose, filters: analyte ? { analyte } : {} });
+    const r = await api.post<{ id: string; state: ExportRow["state"]; manifest: ExportRow["manifest"] }>(`/projects/${pid}/exports`, { format: fmt, purpose, filters: analyte ? { analyte } : {} });
     list.reload();
-    setView({ id: r.id, format: fmt, purpose, created_at: new Date().toISOString(), manifest: r.manifest });
+    setView(r.state === "queued" ? null : { id: r.id, format: fmt, purpose, created_at: new Date().toISOString(), state: r.state, manifest: r.manifest });
   });
   const download = useAction(async (id: string) => {
     // Authorisation is re-checked by the server at download time.
@@ -72,7 +74,7 @@ function Exports() {
     <section className="card">
       <div className="card-head"><h2>Exports</h2><span className="faint">Approved records only · ZIP with data and provenance manifest</span></div>
       <form className="card-pad row" onSubmit={(e) => { e.preventDefault(); create.run(); }} style={{ alignItems: "flex-end" }}>
-        <label className="field">Format<select value={fmt} onChange={(e) => setFmt(e.target.value as "csv" | "geojson")}><option value="csv">CSV</option><option value="geojson">GeoJSON</option></select></label>
+        <label className="field">Format<select value={fmt} onChange={(e) => setFmt(e.target.value as "csv" | "geojson" | "gpkg")}><option value="csv">CSV</option><option value="geojson">GeoJSON</option><option value="gpkg">GeoPackage</option></select></label>
         <label className="field">Analyte<input value={analyte} onChange={(e) => setAnalyte(e.target.value)} placeholder="all" style={{ width: 90 }} /></label>
         <label className="field" style={{ flex: 1 }}>Purpose (recorded)<input value={purpose} onChange={(e) => setPurpose(e.target.value)} placeholder="e.g. Quarterly technical review pack" /></label>
         <button className="primary" disabled={!purpose.trim() || create.pending}>Create export</button>
@@ -84,14 +86,14 @@ function Exports() {
           <thead><tr><th>Created</th><th>Format</th><th>Purpose</th><th className="num">Records</th><th className="num">Unmapped</th><th>Unresolved</th><th /></tr></thead>
           <tbody>
             {list.data.exports.map((e) => (
-              <tr key={e.id} className="clickable" onClick={() => setView(e)}>
+              <tr key={e.id} className="clickable" onClick={() => (e.state ?? "ready") === "ready" && setView(e)}>
                 <td className="faint">{when(e.created_at)}</td>
                 <td>{e.format}</td>
                 <td>{e.purpose}</td>
                 <td className="num">{e.manifest.record_count ?? "—"}</td>
                 <td className="num">{e.manifest.unmapped_count ?? "—"}</td>
-                <td>{e.manifest.revoked ? <span className="badge bad">withdrawn — evidence deleted</span> : e.manifest.unresolved?.open_conflicts ? <span className="badge bad">{e.manifest.unresolved.open_conflicts} open conflicts</span> : <span className="faint">none</span>}</td>
-                <td>{!e.manifest.revoked && <button className="small" onClick={(ev) => { ev.stopPropagation(); download.run(e.id); }}>Download</button>}</td>
+                <td>{e.state === "queued" ? <span className="badge info">being prepared</span> : e.state === "failed" ? <span className="badge bad" title={String((e.manifest as Record<string, unknown>).error ?? "")}>failed</span> : e.manifest.revoked ? <span className="badge bad">withdrawn — evidence deleted</span> : e.manifest.unresolved?.open_conflicts ? <span className="badge bad">{e.manifest.unresolved.open_conflicts} open conflicts</span> : <span className="faint">none</span>}</td>
+                <td>{!e.manifest.revoked && (e.state ?? "ready") === "ready" && <button className="small" onClick={(ev) => { ev.stopPropagation(); download.run(e.id); }}>Download</button>}</td>
               </tr>
             ))}
           </tbody>

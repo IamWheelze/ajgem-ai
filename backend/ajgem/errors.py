@@ -32,6 +32,7 @@ STATUS = {
     "EVIDENCE_DELETED": 410,
     "MFA_REQUIRED": 403,
     "AUTH_CONFIG": 503,
+    "CONFLICT": 409,
 }
 
 

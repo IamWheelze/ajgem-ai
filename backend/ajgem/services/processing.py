@@ -116,6 +116,11 @@ def run_job(db: Session, ctx: Context, access: ProjectAccess, job_id: str, only_
     job.state = "processing"
     if new_attempt:
         job.attempt += 1
+    if job.kind == "export":
+        _run_export(db, ctx, access, job, only_units)
+        _finish(job, final)
+        db.flush()
+        return job
     v = db.get(DocumentVersion, job.version_id)
     data = ctx.store.source(v.storage_key)
     for task in job.tasks:
@@ -157,7 +162,7 @@ def _finish(job: Job, final: bool = True) -> None:
     else:
         job.state = "completed"
     job.updated_at = datetime.now(timezone.utc)
-    kept = {k: v for k, v in (job.manifest or {}).items() if k in ("estimate", "budget", "budget_override")}
+    kept = {k: v for k, v in (job.manifest or {}).items() if k in ("estimate", "budget", "budget_override", "export_id")}
     job.manifest = {**kept,
         "units": [
             {"unit": t.unit_key, "state": t.state, "attempts": t.attempts, "candidates": t.candidate_count, "issues": t.issues}
@@ -167,6 +172,29 @@ def _finish(job: Job, final: bool = True) -> None:
         "partial": job.state == "partial_failed",
         "note": "Completed parsing does not imply approved data; all extracted records require review.",
     }
+
+
+def _run_export(db: Session, ctx: Context, access: ProjectAccess, job: Job, only_units: list[str] | None) -> None:
+    """FR20: build a queued export. A refused grant fails the export with its reason, never a partial file."""
+    from ..models import Export
+    from . import exports
+
+    for task in job.tasks:
+        if task.state in {"succeeded", "flagged"} or (only_units is not None and task.unit_key not in only_units):
+            continue
+        task.attempts += 1
+        sp = db.begin_nested()
+        try:
+            exports.build_queued(db, ctx, access, job.manifest["export_id"])
+            sp.commit()
+            task.state, task.issues = "succeeded", []
+        except ApiError as e:
+            sp.rollback()
+            exp = db.get(Export, job.manifest["export_id"])
+            if exp is not None:
+                exp.state = "failed"
+                exp.manifest = {**(exp.manifest or {}), "state": "failed", "error": e.message}
+            task.state, task.issues = "failed", [issue("EXPORT_FAILED", "critical", None, e.message)]
 
 
 def retry(db: Session, ctx: Context, access: ProjectAccess, job_id: str, units: list[str] | None = None) -> Job:
@@ -189,6 +217,13 @@ def cancel(db: Session, access: ProjectAccess, job_id: str) -> Job:
     job = get_job(db, access, job_id)
     if job.state in {"queued", "processing", "partial_failed", "awaiting_budget_approval"}:
         job.state = "cancelled"
+        if job.kind == "export":
+            from ..models import Export
+
+            exp = db.get(Export, (job.manifest or {}).get("export_id"))
+            if exp is not None and exp.state == "queued":
+                exp.state = "failed"
+                exp.manifest = {**(exp.manifest or {}), "state": "failed", "error": "cancelled before it was built"}
     return job
 
 
