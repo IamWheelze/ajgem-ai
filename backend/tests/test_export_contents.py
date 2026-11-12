@@ -5,7 +5,10 @@ from __future__ import annotations
 import csv
 import io
 import json
+import hashlib
 import zipfile
+
+from PIL import Image
 
 from .conftest import CSV_MAPPING
 
@@ -50,9 +53,11 @@ def test_exports_carry_raw_and_normalised_values_crs_and_pipeline(team):
     _approve_all(team)
 
     z = _export(an, pid)
-    assert set(z.namelist()) == {"data.csv", "samples.csv", "evidence_summary.md", "manifest.json"}
+    assert set(z.namelist()) == {"data.csv", "samples.csv", "evidence_summary.md", "manifest.json", "map.png"}
     man = json.loads(z.read("manifest.json"))
     assert man["crs"]["normalised"].startswith("EPSG:4326") and "raw_and_normalised" in man
+    assert man["map_sha256"] == hashlib.sha256(z.read("map.png")).hexdigest()
+    assert _point_pixels(z) > 0  # the mapped samples are drawn
     assert man["sample_count"] == 3 and man["columns"]["samples.csv"][0] == "sample_id"
     data = {r["sample_id"]: r for r in _rows(z, "data.csv")}
     kw1, kw2 = data["KW-1"], data["KW-2"]
@@ -86,6 +91,7 @@ def test_raw_coordinates_are_withheld_with_the_normalised_ones(team):
     assert r.status_code in (200, 201), r.text
     z = _export(team["viewer"], pid)
     assert json.loads(z.read("manifest.json"))["coordinates_withheld"] is True
+    assert _point_pixels(z) == 0  # the packaged map never draws withheld positions
     for name in ("data.csv", "samples.csv"):
         for row in _rows(z, name):
             assert row["lon"] == row["lat"] == row["raw_x"] == row["raw_y"] == "" and row["coordinate_status"] == "withheld"
@@ -106,7 +112,7 @@ def test_geopackage_export_is_valid_and_exact(team, tmp_path):
     an.post(f"/imports/{pv['id']}/commit", json={"preview_hash": pv["preview_hash"]})
     _approve_all(team)
     z = _export(an, pid, "gpkg")
-    assert set(z.namelist()) == {"data.gpkg", "evidence_summary.md", "manifest.json"}
+    assert set(z.namelist()) == {"data.gpkg", "evidence_summary.md", "manifest.json", "map.png"}
     path = tmp_path / "data.gpkg"
     path.write_bytes(z.read("data.gpkg"))
     con = sqlite3.connect(path)
@@ -141,3 +147,11 @@ def test_every_export_carries_an_evidence_summary(team):
     assert "| Li | 2 | 1 | ppm |" in md  # two results, one censored
     assert "dated.csv" in md and v["version_id"] in md
     assert "does not estimate resources" in md
+
+
+def _point_pixels(z) -> int:
+    img = Image.open(io.BytesIO(z.read("map.png"))).convert("RGB")
+    from ajgem.science.mapimage import PT
+    # Ignore the legend swatch at the foot; count sample markers in the map body only.
+    body = img.crop((0, 0, img.width, img.height - 120))
+    return sum(1 for px in body.getdata() if px == PT)

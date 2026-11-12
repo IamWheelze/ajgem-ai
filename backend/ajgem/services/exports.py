@@ -16,12 +16,12 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import ConflictGroup, DocumentVersion, Export, PageText, Record, RecordRevision, SourceAnchor
 from ..science.analytes import ANALYTE_REGISTRY_VERSION
-from ..science import gpkg
+from ..science import gpkg, mapimage
 from ..science.csvsafe import escape_cell
 from ..science.units import UNIT_REGISTRY_VERSION
 from . import audit
 from .access import ProjectAccess
-from .records import with_revisions
+from .records import _boundary, with_revisions
 
 EXPORT_COLUMNS = [
     "sample_id", "campaign", "analyte", "result_raw", "comparator", "value", "unit", "basis", "method",
@@ -313,6 +313,11 @@ def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: 
         data_name, data = "data.geojson", as_geojson(rows, EXPORT_COLUMNS)
         samples_name, samples_data = "samples.geojson", as_geojson(sample_rows, SAMPLE_COLUMNS)
     now = datetime.now(timezone.utc)
+    pts = [(float(r["lon"]), float(r["lat"])) for r in sample_rows if r["lon"] is not None and r["lat"] is not None]
+    map_png = mapimage.render(f"{access.project.name}: exported samples", _boundary(db, pid), pts,
+                              withheld=not exact_coords,
+                              unmapped=sum(1 for r in sample_rows if r["coordinate_status"] == "unmapped"),
+                              subtitle=f"Approved revisions as of {now:%Y-%m-%d %H:%M} UTC; purpose: {purpose}")
     manifest = {
         "export_format": fmt, "created_at": now.isoformat(), "created_by": access.principal.user_id,
         "project_id": pid, "project_name": access.project.name, "purpose": purpose, "filters": filters,
@@ -334,6 +339,8 @@ def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: 
                      "rights_statement": v.rights_statement} for v in versions.values() if v],
         "attribution": "Source documents remain subject to their original rights; no portability beyond those rights is implied.",
         "data_file": data_name, "data_sha256": hashlib.sha256(data).hexdigest(),
+        "map_file": "map.png", "map_sha256": hashlib.sha256(map_png).hexdigest(),
+        "map": "Locator figure of the boundary and approved sample positions (none when coordinates are withheld)",
         **({"samples_file": samples_name, "samples_sha256": hashlib.sha256(samples_data).hexdigest(),
             "columns": {data_name: EXPORT_COLUMNS, samples_name: SAMPLE_COLUMNS}} if samples_name else
            {"columns": {f"{data_name}:assays": EXPORT_COLUMNS, f"{data_name}:samples": SAMPLE_COLUMNS}}),
@@ -343,6 +350,7 @@ def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: 
         z.writestr(data_name, data)
         if samples_name:
             z.writestr(samples_name, samples_data)
+        z.writestr("map.png", map_png)
         z.writestr("evidence_summary.md", evidence_summary(access.project.name, purpose, filters, rows, sample_rows,
                                                            list(versions.values()), manifest))
         z.writestr("manifest.json", json.dumps(manifest, indent=1, default=str))

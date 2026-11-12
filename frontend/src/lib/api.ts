@@ -1,6 +1,6 @@
 /** Typed client for the AJGEM backend. All calls go through /api (Vite proxy or reverse proxy). */
 
-import { clearIdToken, getIdToken } from "./auth";
+import { clearIdToken, ensureFreshToken, getIdToken } from "./auth";
 
 export const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "/api";
 
@@ -45,7 +45,8 @@ export class ApiError extends Error {
 
 type Init = Omit<RequestInit, "body"> & { body?: unknown; raw?: BodyInit; query?: Record<string, unknown> };
 
-export async function request<T>(path: string, init: Init = {}): Promise<T> {
+export async function request<T>(path: string, init: Init = {}, retried = false): Promise<T> {
+  await ensureFreshToken();
   const headers = new Headers(init.headers);
   for (const [k, v] of Object.entries(authHeaders())) headers.set(k, v);
   let body: BodyInit | undefined = init.raw;
@@ -65,6 +66,9 @@ export async function request<T>(path: string, init: Init = {}): Promise<T> {
   const type = res.headers.get("content-type") ?? "";
   if (!res.ok) {
     const j = type.includes("json") ? await res.json() : null;
+    if (res.status === 401 && getIdToken() && !retried && init.raw === undefined && (await ensureFreshToken(true))) {
+      return request<T>(path, init, true); // renewed: retry once
+    }
     if (res.status === 401 && getIdToken()) {
       // Expired, revoked or unregistered: drop the session and tell the sign-in page why.
       try { sessionStorage.setItem("ajgem.authMessage", j?.error?.message ?? "Please sign in again"); } catch { /* ignore */ }

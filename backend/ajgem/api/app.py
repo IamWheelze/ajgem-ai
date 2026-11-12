@@ -96,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         oidc = OidcVerifier(OidcSettings(
             issuer=settings.oidc_issuer, client_id=settings.oidc_client_id, audience=settings.oidc_audience,
             jwks_url=settings.oidc_jwks_url, max_session_age_seconds=int(settings.oidc_max_session_hours * 3600),
+            scopes=settings.oidc_scopes,
             mfa_amr={a.strip() for a in settings.oidc_mfa_amr.split(",") if a.strip()},
             mfa_acr={a.strip() for a in settings.oidc_mfa_acr.split(",") if a.strip()}))
     elif settings.auth_mode != "dev":

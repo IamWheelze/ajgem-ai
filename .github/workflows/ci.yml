@@ -147,7 +147,7 @@ jobs:
         run: |
           pkill -f "ajgem serve" || true
           rm -rf var && python scripts/seed_demo.py
-          nohup python scripts/mock_oidc.py > idp.log 2>&1 &
+          MOCK_OIDC_TOKEN_TTL=70 nohup python scripts/mock_oidc.py > idp.log 2>&1 &
           AJGEM_AUTH_MODE=oidc AJGEM_OIDC_ISSUER=http://127.0.0.1:9000 AJGEM_OIDC_CLIENT_ID=ajgem-web \
             nohup python -m ajgem serve > server.log 2>&1 &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8000/api/auth/config > /dev/null && exit 0; sleep 1; done

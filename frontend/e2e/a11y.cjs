@@ -13,7 +13,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const SCREENS = [
   ["Dashboard", null], ["Upload & import", "Upload & import"], ["Review", "Review"], ["Data explorer", "Data explorer"],
-  ["Map", "Map"], ["Assistant", "Assistant"], ["Conflicts & versions", "Conflicts & versions"], ["Targets", "Targets"],
+  ["Map", "Map"], ["Assistant", "Assistant"], ["Conflicts & versions", "Conflicts & versions"], ["Targets", "Targets"], ["Field capture", "Field capture"],
   ["Jobs & exports", "Jobs & exports"], ["Administration", "Administration"],
 ];
 

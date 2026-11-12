@@ -7,6 +7,7 @@ export type AuthConfig =
 
 const TOKEN_KEY = "ajgem.idToken";
 const PENDING_KEY = "ajgem.oidcPending";
+const REFRESH_KEY = "ajgem.refreshToken";
 
 const store = {
   get: (k: string) => { try { return sessionStorage.getItem(k); } catch { return null; } },
@@ -34,6 +35,58 @@ export function getIdToken(): string | null {
 
 export function clearIdToken(): void {
   store.del(TOKEN_KEY);
+  store.del(REFRESH_KEY);
+}
+
+/** Pure: whether a token expiring at `exp` (seconds) should be renewed now. */
+export function needsRefresh(exp: number | undefined, now = Date.now(), marginMs = 60_000): boolean {
+  return !exp || exp * 1000 < now + marginMs;
+}
+
+let inflight: Promise<boolean> | null = null;
+
+/**
+ * Renew the ID token with the stored refresh token when it is about to expire (or `force`).
+ *
+ * Refresh tokens rotate: each one is used once and replaced by the one the provider returns. A provider
+ * that returns none ends renewal (the old one is not reused). A refused refresh signs the person out: a
+ * replayed token may mean someone else holds a copy, and the provider revokes the sign-in. The server still
+ * enforces the maximum session age from the original sign-in, so renewal never extends a session past it.
+ * Concurrent callers share one request so a token is never presented twice.
+ */
+export async function ensureFreshToken(force = false): Promise<boolean> {
+  const rt = store.get(REFRESH_KEY);
+  const t = store.get(TOKEN_KEY);
+  if (!rt || !t) return false;
+  if (!force && !needsRefresh(decodeJwt(t)?.exp as number | undefined)) return true;
+  if (!inflight) {
+    inflight = (async () => {
+      const cfg = await getAuthConfig();
+      if (cfg.mode !== "oidc") return false;
+      store.del(REFRESH_KEY); // single use, whatever happens next
+      try {
+        const res = await fetch(cfg.token_endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: rt, client_id: cfg.client_id }),
+        });
+        if (!res.ok) { store.del(TOKEN_KEY); return false; }
+        const body = (await res.json()) as { id_token?: string; refresh_token?: string };
+        if (!body.id_token) { store.del(TOKEN_KEY); return false; }
+        const prev = decodeJwt(t);
+        const next = decodeJwt(body.id_token);
+        if (!next || next.sub !== prev?.sub || next.iss !== prev?.iss) { store.del(TOKEN_KEY); return false; }
+        store.set(TOKEN_KEY, body.id_token);
+        if (body.refresh_token) store.set(REFRESH_KEY, body.refresh_token);
+        return true;
+      } catch {
+        return false; // offline: keep the current token until it expires
+      } finally {
+        inflight = null;
+      }
+    })();
+  }
+  return inflight;
 }
 
 export function decodeJwt(token: string): Record<string, unknown> | null {
@@ -82,10 +135,12 @@ export async function completeLogin(cfg: Extract<AuthConfig, { mode: "oidc" }>, 
     body: new URLSearchParams({ grant_type: "authorization_code", code: params.get("code") ?? "", redirect_uri: redirectUri(), client_id: cfg.client_id, code_verifier: pending.verifier }),
   });
   if (!res.ok) throw new Error(`Token exchange failed (${res.status})`);
-  const body = (await res.json()) as { id_token?: string };
+  const body = (await res.json()) as { id_token?: string; refresh_token?: string };
   if (!body.id_token) throw new Error("The identity provider returned no ID token");
   if (decodeJwt(body.id_token)?.nonce !== pending.nonce) throw new Error("Sign-in token nonce mismatch; try again.");
   store.set(TOKEN_KEY, body.id_token);
+  if (body.refresh_token) store.set(REFRESH_KEY, body.refresh_token);
+  else store.del(REFRESH_KEY);
   return pending.returnTo || "/projects";
 }
 

@@ -147,3 +147,14 @@ Suggested alerts:
 - **Before an upgrade:** take a backup as above.
 - **Applying migrations:** set `AJGEM_AUTO_MIGRATE=0` in production and run `python -m ajgem migrate` as a separate step. Each migration runs in a transaction, so a failure leaves the schema as it was.
 - **Rolling back:** prefer restoring the backup to downgrading. `alembic downgrade` works for schema-only changes, but cannot bring back data that a newer version wrote.
+
+## Sign-in renewal and field devices
+
+* **Refresh tokens.** Add `offline_access` to `AJGEM_OIDC_SCOPES` (or enable refresh tokens for the client in the
+  provider) and turn on **refresh-token rotation with reuse detection** in the provider. Without a refresh token,
+  people simply sign in again when the ID token expires. Either way, no session outlives
+  `AJGEM_OIDC_MAX_SESSION_HOURS` from the original sign-in.
+* **Lost field device.** The owner, or an administrator, revokes it under `POST /devices/{id}/revoke` (or from the
+  device list). Its next sync fails with `DEVICE_REVOKED` and the app wipes its local cache. Unsynced drafts on a lost
+  device are lost by design; the local cache also deletes itself after `cache_ttl_hours` (default 72, at most 336)
+  without a successful sync.
