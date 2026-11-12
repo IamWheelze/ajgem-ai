@@ -520,3 +520,45 @@ class RasterOverlay(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class Device(Base):
+    """FR25: a registered field device. Its secret is stored hashed; a revoked device can never sync again."""
+
+    __tablename__ = "devices"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", name="fk_devices_user_id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    secret_hash: Mapped[str] = mapped_column(String(64))
+    cache_ttl_hours: Mapped[int] = mapped_column(Integer, default=72)
+    registered_at: Mapped[datetime] = _ts()
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_devices_revoked_by"), nullable=True)
+
+
+class FieldDraft(Base):
+    """FR25: a field observation captured offline. The id is the client's UUID, so re-sending is idempotent.
+
+    Drafts by different people for the same sample are all kept, marked ``conflict``, until a reviewer
+    keeps one; only then does it become a sample record for normal review.
+    """
+
+    __tablename__ = "field_drafts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
+    sample_key: Mapped[str] = mapped_column(String(200), index=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    client_revision: Mapped[int] = mapped_column(Integer, default=1)
+    client_updated_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|conflict|accepted|superseded
+    record_id: Mapped[str | None] = mapped_column(ForeignKey("records.id"), nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_field_drafts_resolved_by"),
+                                                    nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synced_at: Mapped[datetime] = _ts()
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id", name="fk_field_drafts_created_by"))

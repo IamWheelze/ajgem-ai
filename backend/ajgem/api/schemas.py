@@ -168,3 +168,24 @@ class ExportIn(Strict):
     format: Literal["csv", "geojson", "gpkg"]
     filters: dict[str, Any] = Field(default_factory=dict)
     purpose: str
+
+
+class DeviceIn(Strict):
+    name: str = Field(default="Field device", max_length=200)
+    cache_ttl_hours: int = 72
+
+
+class FieldDraftIn(Strict):
+    id: str
+    data: dict
+    client_revision: int = 1
+    client_updated_at: str | None = None
+
+
+class FieldSyncIn(Strict):
+    drafts: list[FieldDraftIn] = Field(default_factory=list)
+
+
+class FieldResolveIn(Strict):
+    keep_draft_id: str
+    reason: str

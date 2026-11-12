@@ -33,6 +33,7 @@ STATUS = {
     "MFA_REQUIRED": 403,
     "AUTH_CONFIG": 503,
     "CONFLICT": 409,
+    "DEVICE_REVOKED": 403,
 }
 
 

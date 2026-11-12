@@ -46,7 +46,7 @@ from ..models import (
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import costs, deletion, drilling, overlays, processing, targets, projects, queries, records, uploads
+from ..services import costs, deletion, drilling, field, overlays, processing, targets, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
@@ -548,6 +548,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/projects/{pid}/drilling/trajectory")
     def drilling_trajectory(pid: str, body: S.DrillingIn, s: Session = Depends(db), p: Principal = Depends(principal)):
         return drilling.trajectory(s, ctx, project_access(s, p, pid), body.spec, body.params)
+
+    # ------------------------------------------------------------ FR25 offline field capture
+    def org_admin(s: Session, p: Principal) -> bool:
+        from ..models import Membership
+
+        rows = s.scalars(select(Membership).where(Membership.user_id == p.user_id, Membership.revoked_at.is_(None)))
+        return p.mfa and any("admin" in (m.roles or []) for m in rows)
+
+    @app.post("/devices", status_code=201)
+    def register_device(body: S.DeviceIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return field.register(s, p, body.name, body.cache_ttl_hours)
+
+    @app.get("/devices")
+    def list_devices(s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"devices": field.list_devices(s, p, org_admin(s, p))}
+
+    @app.post("/devices/{did}/revoke")
+    def revoke_device(did: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return field.revoke(s, p, did, org_admin(s, p))
+
+    @app.post("/projects/{pid}/field/sync")
+    def field_sync(pid: str, body: S.FieldSyncIn, s: Session = Depends(db), p: Principal = Depends(principal),
+                   x_device_id: str | None = Header(default=None), x_device_secret: str | None = Header(default=None)):
+        return field.sync(s, project_access(s, p, pid), x_device_id, x_device_secret,
+                          [d.model_dump() for d in body.drafts])
+
+    @app.get("/projects/{pid}/field/drafts")
+    def field_drafts(pid: str, status: str | None = None, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"drafts": field.list_drafts(s, project_access(s, p, pid), status)}
+
+    @app.post("/projects/{pid}/field/resolve")
+    def field_resolve(pid: str, body: S.FieldResolveIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return field.resolve(s, project_access(s, p, pid), body.keep_draft_id, body.reason)
 
     @app.post("/versions/{vid}/rerender")
     def rerender(vid: str, s: Session = Depends(db), p: Principal = Depends(principal)):

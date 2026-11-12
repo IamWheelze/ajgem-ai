@@ -104,6 +104,7 @@ function Shell({ pid, summary, children }: { pid?: string; summary?: Resource<Su
             {link("assistant", "Assistant", s?.stale_answers)}
             {link("conflicts", "Conflicts & versions", conflicts, drafts)}
             {link("targets", "Targets")}
+            {link("field", "Field capture", undefined, roles.has("analyst") || roles.has("contributor") || roles.has("reviewer"))}
             {link("jobs", "Jobs & exports")}
             {link("admin", "Administration", undefined, roles.has("admin") || roles.has("reviewer"))}
           </nav>
