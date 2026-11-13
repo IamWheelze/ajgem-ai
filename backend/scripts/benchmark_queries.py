@@ -33,6 +33,9 @@ def main() -> None:
     ap.add_argument("--profile", action="store_true", help="print a cProfile of one threshold question and stop")
     ap.add_argument("--concurrent", type=int, default=0,
                     help="also time N users each asking the threshold question, a map and a records page at once")
+    ap.add_argument("--processes", action="store_true",
+                    help="with --concurrent, run each user in its own forked process (as with N server workers), "
+                         "so Python's GIL does not serialise them")
     a = ap.parse_args()
     tmp = Path(tempfile.mkdtemp(prefix="ajgem-qbench-"))
     os.environ.update({"AJGEM_DATABASE_URL": a.database_url or f"sqlite:///{tmp}/bench.db",
@@ -152,14 +155,36 @@ def main() -> None:
                 assert r.status_code == 200, r.text[:300]
             return time.perf_counter() - t
 
-        with ThreadPoolExecutor(a.concurrent) as pool:
-            t = time.perf_counter()
-            per_user = list(pool.map(session, range(a.concurrent)))
-            wall = time.perf_counter() - t
+        t = time.perf_counter()
+        if a.processes:
+            import multiprocessing as mp
+
+            ctx = mp.get_context("fork")
+            out_q = ctx.Queue()
+
+            def worker(i):
+                nonlocal c
+                for eng in {app.state.engine, getattr(app.state, "admin_engine", app.state.engine)}:
+                    eng.dispose(close=False)  # never share the parent's connections
+                c = TestClient(app)
+                c.__enter__()
+                out_q.put(session(i))
+
+            procs = [ctx.Process(target=worker, args=(i,)) for i in range(a.concurrent)]
+            for pr in procs:
+                pr.start()
+            per_user = [out_q.get() for _ in procs]
+            for pr in procs:
+                pr.join()
+        else:
+            with ThreadPoolExecutor(a.concurrent) as pool:
+                per_user = list(pool.map(session, range(a.concurrent)))
+        wall = time.perf_counter() - t
         results["concurrent"] = {"users": a.concurrent, "wall": round(wall, 3),
                                  "per_user_p50": round(statistics.median(per_user), 3),
                                  "per_user_max": round(max(per_user), 3),
-                                 "note": "each user: threshold question, map window, records page (one process)"}
+                                 "note": "each user: threshold question, map window, records page; "
+                                         + ("one process per user" if a.processes else "threads in one process")}
     c.__exit__(None, None, None)
     print(json.dumps({
         "assays": a.assays, "samples": a.assays, "database": app.state.engine.url.get_backend_name(),

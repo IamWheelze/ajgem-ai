@@ -45,7 +45,7 @@ All nine screens in the FRD §8 inventory are implemented in `frontend/src/pages
 6. The evidence drawer opens the exact cells, and an export is downloaded.
 7. A user from another organisation sees no projects.
 
-The source viewer outlines the anchored figure on the rendered page, for OCR anchors and for text-layer anchors; page images are rendered in the parser sandbox. Accessibility is checked automatically (NF12). Not yet done: offline drafts (P2).
+The source viewer outlines the anchored figure on the rendered page, for OCR anchors and for text-layer anchors; page images are rendered in the parser sandbox. Accessibility is checked automatically (NF12). Offline field capture (FR25) keeps expiring drafts on the device and syncs them for review.
 
 ## Non-functional requirements
 
