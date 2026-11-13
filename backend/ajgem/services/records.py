@@ -279,6 +279,7 @@ class RecordRow:
     id: str
     sample_key: str | None
     stale: bool
+    mapped: bool | None = None  # whether the approved sample for this key has map coordinates (when requested)
 
 
 @dataclass(slots=True)
@@ -289,7 +290,22 @@ class RevisionRow:
     anchor_ids: list
 
 
-def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ...]) -> list[tuple[RecordRow, RevisionRow]]:
+def mapped_samples_subquery(project_id: str):
+    """sample_key -> whether its approved sample has coordinates; the first sample record by id decides."""
+    from sqlalchemy import func
+
+    rn = func.row_number().over(partition_by=Record.sample_key, order_by=Record.id).label("rn")
+    ranked = (select(Record.sample_key.label("key"),
+                     and_(RecordRevision.lon.is_not(None), RecordRevision.lat.is_not(None)).label("mapped"), rn)
+              .join(RecordRevision, and_(RecordRevision.record_id == Record.id,
+                                         RecordRevision.revision_no == Record.approved_revision_no))
+              .where(Record.project_id == project_id, Record.kind == "sample", Record.approved_revision_no.is_not(None))
+              .subquery())
+    return select(ranked.c.key, ranked.c.mapped).where(ranked.c.rn == 1).subquery()
+
+
+def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ...], *,
+                  with_mapped: bool = False) -> list[tuple[RecordRow, RevisionRow]]:
     """Approved (record, revision) pairs as plain rows, for read-heavy queries at pilot scale (NF09).
 
     One query, run outside the ORM and its type processing. Each revision document is fetched once as text and
@@ -304,13 +320,17 @@ def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ..
                                     RecordRevision.revision_no == Record.approved_revision_no))
          .where(Record.project_id == project_id, Record.kind == kind, Record.approved_revision_no.is_not(None))
          .order_by(Record.sample_key, Record.id))
+    if with_mapped:  # one query instead of a second pass over every sample (NF09)
+        m = mapped_samples_subquery(project_id)
+        q = q.add_columns(m.c.mapped).outerjoin(m, m.c.key == Record.sample_key)
     out = []
-    for row in db.connection().execute(q):
-        rid, key, stale, vid, no, anchors, doc = row
-        full = json.loads(doc) if doc else {}
-        data = {k: (None if full.get(k) is None else str(full[k])) for k in fields}
-        out.append((RecordRow(rid, key, bool(stale)),
-                    RevisionRow(vid, no, data, json.loads(anchors) if anchors and anchors != "[]" else [])))
+    loads = json.loads
+    # fetchall() hands rows over in bulk; iterating the result row by row cost more than the query itself (NF09).
+    for rid, key, stale, vid, no, anchors, doc, *extra in db.connection().execute(q).fetchall():
+        full = loads(doc) if doc else {}
+        data = {k: (None if (v := full.get(k)) is None else v if isinstance(v, str) else str(v)) for k in fields}
+        out.append((RecordRow(rid, key, bool(stale), bool(extra[0]) if with_mapped else None),
+                    RevisionRow(vid, no, data, loads(anchors) if anchors and anchors != "[]" else [])))
     return out
 
 

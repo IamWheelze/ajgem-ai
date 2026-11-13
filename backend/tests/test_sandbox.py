@@ -22,6 +22,18 @@ def _userns_available() -> bool:
 USERNS = _userns_available()
 
 
+def _seccomp_available() -> bool:
+    from ajgem.services import seccomp
+
+    pid = os.fork()
+    if pid == 0:  # the filter is irreversible, so probe it in a throwaway child
+        os._exit(0 if seccomp.install() else 1)
+    return os.waitpid(pid, 0)[1] == 0
+
+
+SECCOMP = _seccomp_available()
+
+
 # Module-level so the fork server can import them.
 def _connect_out():
     try:
@@ -74,6 +86,45 @@ def test_parser_has_no_network():
     assert isolated is True and out != "connected"
 
 
+def _forbidden_calls():
+    import socket
+    import subprocess
+
+    out = {}
+    try:
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()
+        out["inet_socket"] = "allowed"
+    except PermissionError:
+        out["inet_socket"] = "refused"
+    try:
+        os.unshare(os.CLONE_NEWNS)
+        out["unshare"] = "allowed"
+    except PermissionError:
+        out["unshare"] = "refused"
+    a, b = socket.socketpair()  # Unix sockets stay available (the parser's own plumbing)
+    a.close(), b.close()
+    out["subprocess"] = subprocess.run(["true"]).returncode  # the OCR engine is started as a child process
+    return out
+
+
+@pytest.mark.skipif(not SECCOMP, reason="seccomp filtering is not available on this host")
+def test_seccomp_refuses_syscalls_a_parser_never_needs():
+    out, iso = sandbox.run_with_status(_forbidden_calls)
+    assert iso["seccomp"] is True
+    assert out == {"inet_socket": "refused", "unshare": "refused", "subprocess": 0}
+
+
+def test_seccomp_program_is_well_formed():
+    from ajgem.services import seccomp
+
+    for arch in seccomp.TABLES:
+        prog = seccomp.program(arch)
+        assert prog[-1] == (0x06, 0, 0, 0x00050001) and prog[-2] == (0x06, 0, 0, 0x7FFF0000)
+        for i, (code, jt, jf, _) in enumerate(prog):
+            if code in (0x15, 0x35):
+                assert i + 1 + max(jt, jf) < len(prog)  # every jump lands inside the program
+
+
 def test_isolation_is_reported_not_assumed():
     _, isolated = sandbox.run(_allocate, 1)
     assert isolated is USERNS
@@ -87,20 +138,21 @@ def test_pages_are_parsed_in_the_sandbox(team, app):
 
     with app.state.admin_sessions() as s:
         q = s.query(PageText).filter_by(version_id=up["version_id"]).one().quality
-    assert q["sandbox"] == {"version": sandbox.SANDBOX_VERSION, "enabled": True, "network_isolated": USERNS}
+    assert q["sandbox"] == {"version": sandbox.SANDBOX_VERSION, "enabled": True, "network_isolated": USERNS,
+                            "seccomp": SECCOMP}
 
 
 def test_a_parser_limit_flags_the_page_without_retrying(team, app, monkeypatch):
     from ajgem.services import processing
 
-    real = processing.sandbox.run_or_inline
+    real = processing.sandbox.run_or_inline_with_status
 
     def tight(enabled, fn, *args, limits=None, **kw):
         if fn is processing.parse_page:  # only the page parser gets a limit far below what it needs
             limits = sandbox.Limits(memory_bytes=64 * 2**20)
         return real(enabled, fn, *args, limits=limits, **kw)
 
-    monkeypatch.setattr(processing.sandbox, "run_or_inline", tight)
+    monkeypatch.setattr(processing.sandbox, "run_or_inline_with_status", tight)
     an, pid = team["analyst"], team["pid"]
     # Rendering a scanned page at 300 DPI needs far more than 64 MiB.
     up = an.upload(pid, make_scanned_pdf([["KW-302 Li 1500 ppm"]]), "t.pdf").json()

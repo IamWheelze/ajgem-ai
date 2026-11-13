@@ -6,7 +6,10 @@ PDF parsing, page rendering and OCR run in a short-lived child process with:
 * an address-space limit (RLIMIT_AS), which also binds the OCR engine the child starts;
 * no network where the kernel allows it: the child unshares into fresh user and network
   namespaces, so it has only a loopback interface that is down. Where unprivileged namespaces
-  are not available, this is recorded (``network_isolated: False``), not silently assumed.
+  are not available, this is recorded (``network_isolated: False``), not silently assumed;
+* a seccomp filter (``seccomp.py``) that refuses syscalls a parser never needs (ptrace, mount,
+  module loading, bpf, keyrings, io_uring, non-Unix sockets, foreign ABIs and more). Where it
+  cannot be installed this is recorded too (``seccomp: False``).
 
 The child returns plain data (text, word boxes, flags). It never touches the database or
 object storage credentials: the parent decides what to store. Children come from a
@@ -23,7 +26,7 @@ import signal
 import traceback
 from dataclasses import dataclass
 
-SANDBOX_VERSION = "sandbox-1"
+SANDBOX_VERSION = "sandbox-2"  # 2: seccomp filter
 
 
 @dataclass(frozen=True)
@@ -67,10 +70,13 @@ def _isolate_network() -> bool:
 
 def _child(conn, limits: Limits, fn, args, kwargs):
     try:
-        isolated = _isolate_network()
+        net = _isolate_network()
         resource.setrlimit(resource.RLIMIT_CPU, (limits.cpu_seconds, limits.cpu_seconds + 5))
         resource.setrlimit(resource.RLIMIT_AS, (limits.memory_bytes, limits.memory_bytes))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        from . import seccomp
+
+        isolated = {"network": net, "seccomp": seccomp.install()}  # last: it also forbids further unshare()
         try:
             out = fn(*args, **kwargs)
         except MemoryError:
@@ -88,7 +94,13 @@ def _child(conn, limits: Limits, fn, args, kwargs):
 
 
 def run(fn, *args, limits: Limits | None = None, **kwargs):
-    """Run ``fn(*args, **kwargs)`` in an isolated child. Returns ``(result, network_isolated)``.
+    """Run ``fn(*args, **kwargs)`` in an isolated child. Returns ``(result, network_isolated)``."""
+    out, iso = run_with_status(fn, *args, limits=limits, **kwargs)
+    return out, iso["network"]
+
+
+def run_with_status(fn, *args, limits: Limits | None = None, **kwargs):
+    """Like ``run``, returning ``(result, {"network": bool, "seccomp": bool})``.
 
     ``fn`` must be a module-level function and its arguments and result picklable. Exceptions
     raised by ``fn`` are re-raised here unchanged, so callers keep their error handling.
@@ -132,3 +144,10 @@ def run_or_inline(enabled: bool, fn, *args, limits: Limits | None = None, **kwar
     if enabled:
         return run(fn, *args, limits=limits, **kwargs)
     return fn(*args, **kwargs), False
+
+
+def run_or_inline_with_status(enabled: bool, fn, *args, limits: Limits | None = None, **kwargs):
+    """``run_or_inline`` that also reports whether the seccomp filter was in force."""
+    if enabled:
+        return run_with_status(fn, *args, limits=limits, **kwargs)
+    return fn(*args, **kwargs), {"network": False, "seccomp": False}

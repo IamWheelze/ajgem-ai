@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .db import Base, ExactDecimal, new_id, utcnow
+from .db import Base, ExactDecimal, PackedJSON, new_id, utcnow
 
 
 def _id() -> Mapped[str]:
@@ -349,8 +349,8 @@ class AnswerSnapshot(Base):
     tool: Mapped[str] = mapped_column(String(64))
     tool_version: Mapped[str] = mapped_column(String(32))
     params: Mapped[dict] = mapped_column(JSON)
-    inputs: Mapped[dict] = mapped_column(JSON)  # frozen record revisions + decision state
-    result: Mapped[dict] = mapped_column(JSON)
+    inputs: Mapped[dict] = mapped_column(PackedJSON)  # frozen record revisions + decision state
+    result: Mapped[dict] = mapped_column(PackedJSON)
     analyte_element: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     state: Mapped[str] = mapped_column(String(24), default="current")  # current|stale|evidence_removed
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

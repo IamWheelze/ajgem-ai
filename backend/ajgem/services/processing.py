@@ -372,11 +372,11 @@ def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersio
     is_docx = v.detected_format == "docx"
     try:
         if is_docx:
-            parsed, isolated = sandbox.run_or_inline(ctx.settings.parser_sandbox, docx.render, data, page_index,
+            parsed, iso = sandbox.run_or_inline_with_status(ctx.settings.parser_sandbox, docx.render, data, page_index,
                                                      docx.PARAGRAPHS_PER_PAGE, docx.RENDERER_VERSION,
                                                      limits=sandbox_limits(ctx.settings))
         else:
-            parsed, isolated = sandbox.run_or_inline(ctx.settings.parser_sandbox, parse_page, data, page_index,
+            parsed, iso = sandbox.run_or_inline_with_status(ctx.settings.parser_sandbox, parse_page, data, page_index,
                                                      ctx.settings.ocr_timeout_seconds, limits=sandbox_limits(ctx.settings))
     except sandbox.ParserLimitExceeded as e:
         # Deterministic for this page: retrying would hit the same limit, so the page goes to manual entry.
@@ -392,7 +392,7 @@ def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersio
     text, lines, method, page_issues, label = (parsed["text"], parsed["lines"], parsed["method"], parsed["issues"],
                                                parsed["label"])
     quality = {**parsed["quality"], "sandbox": {"version": sandbox.SANDBOX_VERSION, "enabled": ctx.settings.parser_sandbox,
-                                                "network_isolated": isolated}}
+                                                "network_isolated": iso["network"], "seccomp": iso["seccomp"]}}
     if is_docx:
         quality["paragraphs"] = parsed["paragraphs"]  # where each paragraph starts on the page: locators need it
     costs.record(db, v.organisation_id, v.project_id, "pages", job_id=task.job_id)

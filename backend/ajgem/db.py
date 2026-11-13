@@ -26,6 +26,59 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+PACK_MIN = 32  # lists shorter than this are stored as they are
+
+
+def pack_lists(doc):
+    """Store long lists of dicts as shapes + values instead of repeating every key in every item (NF09).
+
+    ``{"rows": [{"a": 1, "b": 2}, {"a": 3, "b": 4}]}`` becomes
+    ``{"rows": {"__packed__": "shapes-v1", "shapes": [["a", "b"]], "data": [[0, 1, 2], [0, 3, 4]]}}``.
+    Item order and each item's exact keys are kept; values are not touched. Only top-level lists are packed.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    out = {}
+    for k, v in doc.items():
+        if isinstance(v, list) and len(v) >= PACK_MIN and all(type(x) is dict for x in v):
+            shapes: dict[tuple, int] = {}
+            data = []
+            for item in v:
+                keys = tuple(item)
+                sid = shapes.setdefault(keys, len(shapes))
+                data.append([sid, *item.values()])
+            out[k] = {"__packed__": "shapes-v1", "shapes": [list(t) for t in shapes], "data": data}
+        else:
+            out[k] = v
+    return out
+
+
+def unpack_lists(doc):
+    if not isinstance(doc, dict):
+        return doc
+    out = {}
+    for k, v in doc.items():
+        if isinstance(v, dict) and v.get("__packed__") == "shapes-v1":
+            shapes = v["shapes"]
+            out[k] = [dict(zip(shapes[row[0]], row[1:])) for row in v["data"]]
+        else:
+            out[k] = v
+    return out
+
+
+class PackedJSON(TypeDecorator):
+    """JSON whose long top-level lists of dicts are stored compactly; readers always see plain dicts."""
+
+    impl = JSON
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        return pack_lists(value)
+
+    def process_result_value(self, value, dialect):
+        return unpack_lists(value)
+
+
 class ExactDecimal(TypeDecorator):
     """Exact decimal storage: NUMERIC on PostgreSQL, canonical text elsewhere."""
 
@@ -51,6 +104,12 @@ class Base(DeclarativeBase):
     type_annotation_map = {dict: JSON, list: JSON}
 
 
+def _compact_json(value) -> str:
+    import json
+
+    return json.dumps(value, separators=(",", ":"))
+
+
 def make_engine(url: str) -> Engine:
     kwargs = {}
     if url.startswith("sqlite"):
@@ -59,6 +118,9 @@ def make_engine(url: str) -> Engine:
             from sqlalchemy.pool import StaticPool
 
             kwargs["poolclass"] = StaticPool
+    # Compact JSON: answer snapshots can hold 100,000 rows, and the default ", " / ": " separators add about a tenth
+    # to what is sent and stored (NF09).
+    kwargs["json_serializer"] = _compact_json
     engine = create_engine(url, **kwargs)
     if url.startswith("sqlite"):
 

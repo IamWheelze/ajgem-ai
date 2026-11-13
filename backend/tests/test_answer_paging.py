@@ -43,3 +43,16 @@ def test_long_answers_are_paged_from_the_frozen_snapshot(team, app, monkeypatch)
     assert rerun["reproduced"] is True and len(rerun["result"]["rows"]) == 7
     # Other projects' members cannot page someone else's answer.
     assert team["outsider"].get(f"/answers/{aid}/rows").status_code == 403
+
+
+def test_snapshot_lists_are_packed_losslessly():
+    from ajgem.db import pack_lists, unpack_lists
+
+    rows = [{"a": i, "b": str(i), "c": None} if i % 3 else {"b": "x", "a": i, "equivalent": {"k": [1]}} for i in range(100)]
+    doc = {"rows": rows, "counts": {"YES": 1}, "short": [{"a": 1}], "mixed": [1, {"a": 2}] * 40}
+    packed = pack_lists(doc)
+    assert packed["rows"]["__packed__"] == "shapes-v1" and len(packed["rows"]["shapes"]) == 2
+    assert packed["short"] == [{"a": 1}] and packed["mixed"] == doc["mixed"]
+    back = unpack_lists(packed)
+    assert back == doc and [list(r) for r in back["rows"]] == [list(r) for r in rows]  # key order kept too
+    assert unpack_lists({"rows": rows}) == {"rows": rows}  # snapshots written before packing read unchanged
