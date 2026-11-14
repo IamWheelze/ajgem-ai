@@ -289,6 +289,17 @@ class RevisionRow:
     anchor_ids: list
 
 
+def roomy_sorts(conn) -> None:
+    """Let this transaction sort large result sets in memory (PostgreSQL's 4 MB default spills 100,000 rows to disk).
+
+    Transaction-local, so it ends with the request. NF09.
+    """
+    if conn.dialect.name == "postgresql":
+        from sqlalchemy import text
+
+        conn.execute(text("SET LOCAL work_mem = '64MB'"))
+
+
 def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ...]) -> list[tuple[RecordRow, RevisionRow]]:
     """Approved (record, revision) pairs as plain rows, for read-heavy queries at pilot scale (NF09).
 
@@ -307,7 +318,9 @@ def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ..
     out = []
     loads = json.loads
     # fetchall() hands rows over in bulk; iterating the result row by row cost more than the query itself (NF09).
-    for rid, key, stale, vid, no, anchors, doc in db.connection().execute(q).fetchall():
+    conn = db.connection()
+    roomy_sorts(conn)
+    for rid, key, stale, vid, no, anchors, doc in conn.execute(q).fetchall():
         full = loads(doc) if doc else {}
         data = {k: (None if (v := full.get(k)) is None else v if isinstance(v, str) else str(v)) for k in fields}
         out.append((RecordRow(rid, key, bool(stale)),

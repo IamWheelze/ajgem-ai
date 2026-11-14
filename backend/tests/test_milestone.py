@@ -105,6 +105,12 @@ def test_threshold_question_with_conflict_censoring_and_sources(milestone):
     assert "KW-001" not in yes
     assert any(e["sample_id"] == "KW-001" and e["reason"] == "UNRESOLVED_CONFLICT" for e in res["exclusions"])
     assert body["citations"]["supported"] and body["citations"]["anchor_ids"]
+    # Each row says whether its sample is on the map. On PostgreSQL this is read on a second connection, which
+    # must carry the caller's RLS identity, or every row would quietly read as unmapped.
+    fc = an.get(f"/projects/{pid}/features").json()
+    on_map = {f["properties"]["sample_id"] for f in fc["features"]}
+    assert res["rows"] and all(r["mapped"] == (r["sample_id"] in on_map) for r in res["rows"])
+    assert any(r["mapped"] for r in res["rows"])
 
     # KW-002 "<100 ppm": indeterminate against >50, definitely not above 200.
     p50 = an.post(f"/projects/{pid}/questions", json={"tool": "assay_threshold", "params": {

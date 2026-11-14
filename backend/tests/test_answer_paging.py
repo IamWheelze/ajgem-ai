@@ -49,9 +49,10 @@ def test_snapshot_lists_are_packed_losslessly():
     from ajgem.db import pack_lists, unpack_lists
 
     rows = [{"a": i, "b": str(i), "c": None} if i % 3 else {"b": "x", "a": i, "equivalent": {"k": [1]}} for i in range(100)]
+    rows += [{"c": None, "b": "y", "a": i} for i in range(5)]  # the same keys as the first shape, in another order
     doc = {"rows": rows, "counts": {"YES": 1}, "short": [{"a": 1}], "mixed": [1, {"a": 2}] * 40}
     packed = pack_lists(doc)
-    assert packed["rows"]["__packed__"] == "shapes-v1" and len(packed["rows"]["shapes"]) == 2
+    assert packed["rows"]["__packed__"] == "shapes-v1" and len(packed["rows"]["shapes"]) == 3
     assert packed["short"] == [{"a": 1}] and packed["mixed"] == doc["mixed"]
     back = unpack_lists(packed)
     assert back == doc and [list(r) for r in back["rows"]] == [list(r) for r in rows]  # key order kept too
