@@ -88,7 +88,19 @@ This processes a synthetic printed scan through the real pipeline: sandbox, Tess
 |---|---|---|---|
 | 2026-11-09 | 4-core Intel Xeon @ 2.10 GHz, 15 GB RAM, Tesseract 5.3.4, SQLite | 100 pages at 200 DPI, 20 assay rows a page, clean synthetic print | Inline: 181 s (33 pages a minute); all 100 pages succeeded and 2,000 of 2,000 rows were extracted. With 3 workers: 182 s. A job is leased to one worker, so workers add throughput across documents, not within one. |
 
-The NF10 target is 100 pages in 30 minutes, so the margin on clean scans is about tenfold. Real scans (skew, stamps, low contrast, handwriting) are slower and less accurate. Repeat the run on the pilot worker profile with a sample of real scans, and record the scan difficulty with the result.
+The NF10 target is 100 pages in 30 minutes, so the margin on clean scans is about tenfold. Real scans (skew, stamps, low contrast, handwriting) are slower and less accurate.
+
+### With real scans
+
+Combine about 100 pages of real scans into one PDF, including some poor ones, and count the assay rows in it by hand. Then run, on the pilot worker profile:
+
+```bash
+cd backend && python scripts/benchmark_ocr.py --scan pilot_scans.pdf --expected-rows 1850 --workers 2
+```
+
+- **Report:** timings, pages a minute, the share of rows extracted, each page's method (text layer or OCR), OCR confidence (minimum, median, pages below 60%) and a count of each warning raised.
+- **Privacy:** the report never includes the scan's contents. The run uses a throwaway database and object store, and deletes them, including its copy of the scan, when it finishes. Pass `--keep` to inspect them.
+- **Recording:** add a row to the table above. Give the median OCR confidence and the extracted share as the scan difficulty.
 
 ## Query benchmark (NF09)
 
