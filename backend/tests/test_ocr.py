@@ -68,7 +68,7 @@ def test_rotated_scan_is_corrected_and_boxes_map_to_the_original_page(team):
     assert w > h  # the stored page is landscape (the scan is sideways)
     x0, y0, x1, y1 = view["anchor"]["bbox"]
     assert (x1 - x0) < (y1 - y0)  # text runs vertically on the sideways page
-    assert 0 <= x0 and x1 <= w and 0 <= y0 and y1 <= h
+    assert x0 >= 0 and x1 <= w and y0 >= 0 and y1 <= h
 
 
 @needs_tesseract

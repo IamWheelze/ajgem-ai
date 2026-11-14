@@ -8,16 +8,15 @@ Large answer snapshots (up to 100,000 rows) are written once per question. Postg
 compression made that write the slowest step of the worst-case threshold question; lz4 is several
 times faster for a similar size (NF09). Servers built without lz4 keep pglz.
 """
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = '0013'
-down_revision: Union[str, None] = '0012'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = '0012'
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 COLUMNS = (("answer_snapshots", "inputs"), ("answer_snapshots", "result"))
 
@@ -28,7 +27,7 @@ def _lz4_available(bind) -> bool:
             "SELECT 'lz4' = ANY(string_to_array(current_setting('default_toast_compression', true), ',')) "
             "OR EXISTS (SELECT 1 FROM pg_settings WHERE name = 'default_toast_compression' "
             "AND 'lz4' = ANY(enumvals))")).scalar()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

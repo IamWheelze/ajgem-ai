@@ -86,7 +86,7 @@ class Context:
     answer_provider: object | None = None
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> "Context":
+    def from_settings(cls, settings: Settings) -> Context:
         return cls(
             settings=settings,
             store=LocalObjectStore(settings.data_dir),

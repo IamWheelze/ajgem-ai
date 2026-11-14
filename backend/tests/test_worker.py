@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -75,7 +75,7 @@ def test_a_dead_workers_job_is_resumed_without_redoing_finished_pages(queued, mo
     assert [u["state"] for u in _job(queued)["manifest"]["units"]] == ["succeeded", "queued", "queued"]
     # Until w1's lease expires nobody else may take the job; afterwards w2 does.
     assert worker.claim_next(st.admin_sessions, "w2", 300) is None
-    later = datetime.now(timezone.utc) + timedelta(seconds=301)
+    later = datetime.now(UTC) + timedelta(seconds=301)
     claim2 = worker.claim_next(st.admin_sessions, "w2", 300, now=later)
     assert claim2.job_id == queued["job_id"] and claim2.claims == 2
     assert worker.process(st, claim2, "w2") == "needs_review"

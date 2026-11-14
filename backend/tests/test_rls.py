@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(not PG, reason="PostgreSQL RLS tests: set AJGEM_
 
 @pytest.fixture()
 def seeded(team, app):
-    an, r1, pid = team["analyst"], team["rev1"], team["pid"]
+    an, pid = team["analyst"], team["pid"]
     v = an.upload(pid, make_assay_csv(3), "a.csv").json()
     pv = an.post(f"/versions/{v['version_id']}/import-previews", json={"mapping": CSV_MAPPING}).json()
     an.post(f"/imports/{pv['id']}/commit", json={"preview_hash": pv["preview_hash"]})

@@ -8,7 +8,7 @@ Administration does not confer review authority (FRD §3).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -85,7 +85,7 @@ def load_principal(db: Session, user_id: str | None, mfa: bool = True) -> Princi
 
 def _aware(dt: datetime | None) -> datetime | None:
     if dt is not None and dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
+        return dt.replace(tzinfo=UTC)
     return dt
 
 
@@ -94,7 +94,7 @@ def project_access(db: Session, principal: Principal, project_id: str, op: str =
     if project is None or project.organisation_id != principal.organisation_id or project.status == "deleted":
         raise forbidden()
     m = db.scalar(select(Membership).where(Membership.project_id == project_id, Membership.user_id == principal.user_id))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if m is None or m.revoked_at is not None or (_aware(m.expires_at) is not None and _aware(m.expires_at) <= now):
         raise forbidden()
     access = ProjectAccess(principal, project, m)
@@ -103,7 +103,7 @@ def project_access(db: Session, principal: Principal, project_id: str, op: str =
 
 
 def accessible_project_ids(db: Session, principal: Principal) -> list[str]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = db.scalars(
         select(Membership)
         .join(Project, Project.id == Membership.project_id)

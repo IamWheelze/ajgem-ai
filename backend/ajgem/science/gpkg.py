@@ -16,7 +16,7 @@ import os
 import sqlite3
 import struct
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 WGS84_WKT = (
     'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],'
@@ -70,7 +70,7 @@ def write(layers: list[dict]) -> bytes:
                 ("Undefined geographic SRS", 0, "NONE", 0, "undefined", "undefined geographic coordinate reference system"),
                 ("WGS 84 geodetic", 4326, "EPSG", 4326, WGS84_WKT, "longitude/latitude coordinates in decimal degrees"),
             ])
-            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             for layer in layers:
                 t = _ident(layer["name"])
                 cols = layer["columns"]
@@ -193,7 +193,7 @@ def read_layer(path: str, layer: dict, max_rows: int) -> tuple[list[str], list[t
         out = []
         for row in con.execute(f"SELECT {cols} FROM {t} ORDER BY 1 LIMIT ?", (max_rows + 1,)):
             fid, geom, *vals = row
-            out.append((int(fid), {"geometry": geom, **{a: v for a, v in zip(attrs, vals)}}))
+            out.append((int(fid), {"geometry": geom, **dict(zip(attrs, vals, strict=True))}))
         return attrs, out
     finally:
         con.close()

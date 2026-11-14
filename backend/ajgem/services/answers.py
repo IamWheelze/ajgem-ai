@@ -36,10 +36,7 @@ MAX_PASSAGES = 8
 MAX_BLOCKS_PER_PASSAGE = 14
 CONTEXT_LINES = 1
 
-_STOP = set("""a an the of in on at to for from by with and or not no is are was were be been being this that these those
-which what where when who whom whose why how do does did have has had can could should would may might will shall
-there their them they it its as into about over under than then so such any all some each per across within between
-report reported reports show shows showed find found give list tell me please project document documents""".split())
+_STOP = {"a", "an", "the", "of", "in", "on", "at", "to", "for", "from", "by", "with", "and", "or", "not", "no", "is", "are", "was", "were", "be", "been", "being", "this", "that", "these", "those", "which", "what", "where", "when", "who", "whom", "whose", "why", "how", "do", "does", "did", "have", "has", "had", "can", "could", "should", "would", "may", "might", "will", "shall", "there", "their", "them", "they", "it", "its", "as", "into", "about", "over", "under", "than", "then", "so", "such", "any", "all", "some", "each", "per", "across", "within", "between", "report", "reported", "reports", "show", "shows", "showed", "find", "found", "give", "list", "tell", "me", "please", "project", "document", "documents"}
 
 # Reviewed synonym registry: element names <-> symbols only. Minerals are never mapped to elements
 # (spodumene is not "lithium"; a Li assay does not establish spodumene) — FRD §9 search routing.

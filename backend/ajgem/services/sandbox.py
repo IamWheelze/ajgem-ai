@@ -82,7 +82,7 @@ def _child(conn, limits: Limits, fn, args, kwargs):
         except MemoryError:
             conn.send(("limit", "PARSER_MEMORY_LIMIT", f"Parser exceeded the {limits.memory_bytes // 2**20} MiB memory limit"))
             return
-        except BaseException as e:  # noqa: BLE001 - every failure is reported to the parent
+        except BaseException as e:
             try:
                 conn.send(("raise", e, isolated))
             except Exception:  # the exception itself is not picklable

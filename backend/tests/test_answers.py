@@ -52,7 +52,7 @@ def _cite(passages, needle):
 
 @pytest.fixture()
 def project(team, app):
-    an, admin, pid = team["analyst"], team["admin"], team["pid"]
+    an, pid = team["analyst"], team["pid"]
     an.upload(pid, make_pdf(REPORT), "report.pdf")
     return {**team, "app": app}
 
@@ -197,7 +197,7 @@ def test_cited_answer_end_to_end(project):
     assert [s["text"] for s in r["statements"]] == ["Spodumene was observed in dyke D3 (visual, unconfirmed)."]
     assert r["suppressed"] == {"unsupported_figure": 1, "uncited": 1}
     assert r["provider"]["model"] == "fake-model-1" and r["provider"]["usage"]["input_tokens"] == 100
-    q, passages = fake.calls[0]
+    _q, passages = fake.calls[0]
     assert passages[0].title.startswith("report.pdf (version 1), page 2")
     cite = r["statements"][0]["citations"][0]
     view = an.get(f"/anchors/{cite['anchor_id']}").json()

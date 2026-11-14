@@ -36,7 +36,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def scanned_pdf(pages: int, dpi: int) -> bytes:
     import pypdfium2 as pdfium
-    from PIL import Image
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
 

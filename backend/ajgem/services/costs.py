@@ -17,7 +17,7 @@ review, so a budget never silently drops evidence.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -32,7 +32,7 @@ LIMIT_KEYS = ("monthly_pages", "monthly_model_tokens")
 
 
 def month_start(now: datetime | None = None) -> datetime:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 

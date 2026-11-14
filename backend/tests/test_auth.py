@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import jwt
 import pytest
@@ -163,7 +163,7 @@ def test_dev_header_and_user_picker_are_disabled(client, idp, oidc_app):
 
 
 def test_privileged_actions_need_mfa(client, idp):
-    pid, admin, ids = _project(client, idp)
+    pid, admin, _ids = _project(client, idp)
     an = bearer(idp.token("sub-an", "analyst@kano.test"))
     v = client.post(f"/projects/{pid}/uploads", headers={**an, "Idempotency-Key": "k"}, json={
         "filename": "a.csv", "size": 22, "sha256": "0" * 64, "rights_confirmed": True})
@@ -187,7 +187,7 @@ def test_revocation_and_deactivation_take_effect_immediately(client, idp, oidc_a
     assert client.get("/me", headers=bearer(tok)).status_code == 200
     with oidc_app.state.admin_sessions() as s:
         u = s.query(User).filter_by(email="analyst@kano.test").one()
-        u.sessions_revoked_before = datetime.now(timezone.utc)
+        u.sessions_revoked_before = datetime.now(UTC)
         s.commit()
     assert client.get("/me", headers=bearer(tok)).status_code == 401
     fresh = idp.token("sub-an", "analyst@kano.test", iat=int(time.time()) + 1)

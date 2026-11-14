@@ -7,7 +7,7 @@ import hashlib
 import io
 import json
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -15,8 +15,8 @@ from sqlalchemy.orm import Session
 from ..context import Context
 from ..errors import ApiError
 from ..models import ConflictGroup, DocumentVersion, Export, PageText, Record, RecordRevision, SourceAnchor
-from ..science.analytes import ANALYTE_REGISTRY_VERSION
 from ..science import gpkg, mapimage
+from ..science.analytes import ANALYTE_REGISTRY_VERSION
 from ..science.csvsafe import escape_cell
 from ..science.units import UNIT_REGISTRY_VERSION
 from . import audit
@@ -95,7 +95,7 @@ def _text_layer_box(ctx: Context, v: DocumentVersion, page_text: str, a: SourceA
                                        ctx.store.source(v.storage_key), a.page_index or 0, a.raw_text, occurrence,
                                        limits=processing.sandbox_limits(ctx.settings))
         return box
-    except Exception:  # noqa: BLE001 - a missing box only means no outline is drawn
+    except Exception:
         return None
 
 
@@ -304,15 +304,15 @@ def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: 
         # One GeoPackage with both layers; every attribute is TEXT so exact decimals stay exact.
         data_name, data = "data.gpkg", gpkg.write([
             {"name": "assays", "description": "Approved assay results (reported and normalised)",
-             "columns": [c for c in EXPORT_COLUMNS], "rows": rows},
+             "columns": list(EXPORT_COLUMNS), "rows": rows},
             {"name": "samples", "description": "Approved samples with raw and normalised coordinates",
-             "columns": [c for c in SAMPLE_COLUMNS], "rows": sample_rows},
+             "columns": list(SAMPLE_COLUMNS), "rows": sample_rows},
         ])
         samples_name, samples_data = None, b""
     else:
         data_name, data = "data.geojson", as_geojson(rows, EXPORT_COLUMNS)
         samples_name, samples_data = "samples.geojson", as_geojson(sample_rows, SAMPLE_COLUMNS)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     pts = [(float(r["lon"]), float(r["lat"])) for r in sample_rows if r["lon"] is not None and r["lat"] is not None]
     map_png = mapimage.render(f"{access.project.name}: exported samples", _boundary(db, pid), pts,
                               withheld=not exact_coords,

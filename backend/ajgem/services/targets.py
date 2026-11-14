@@ -14,7 +14,7 @@ says so and explains how to add some.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -185,7 +185,7 @@ def unlink_evidence(db: Session, access: ProjectAccess, target_id: str, evidence
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
     if not (reason or "").strip():
         raise ApiError("INPUT_INVALID", "Give a reason for removing the link")
-    ev.removed_at, ev.removed_by = datetime.now(timezone.utc), access.principal.user_id
+    ev.removed_at, ev.removed_by = datetime.now(UTC), access.principal.user_id
     audit.record(db, access.principal, "target.evidence.unlink", "target", t.id, project_id=t.project_id,
                  detail={"evidence_id": ev.id, "record_id": ev.record_id, "reason": reason.strip()})
 

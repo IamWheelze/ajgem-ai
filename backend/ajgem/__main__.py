@@ -13,10 +13,10 @@
 from __future__ import annotations
 
 import sys
+from datetime import UTC
 from pathlib import Path
 
 from sqlalchemy import select
-
 
 WEB_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
@@ -113,7 +113,10 @@ def main(argv: list[str]) -> int:
                 return 1
             budget = dict(org.budget or {})
             rest = argv[2:]
-            for flag, value in zip(rest[::2], rest[1::2]):
+            if len(rest) % 2:
+                print(f"{rest[-1]} needs a value")
+                return 2
+            for flag, value in zip(rest[::2], rest[1::2], strict=True):
                 if flag not in flags:
                     print(f"unknown option {flag}")
                     return 2
@@ -136,14 +139,14 @@ def main(argv: list[str]) -> int:
             print(f"{org.name}: {org.budget or 'no budget limits'}")
         return 0
     if argv[0] == "revoke-sessions":
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         with app.state.admin_sessions() as s:  # owner role: user lookup across organisations
             user = s.scalar(select(User).where(User.email == argv[1]))
             if user is None:
                 print(f"no user {argv[1]}")
                 return 1
-            user.sessions_revoked_before = datetime.now(timezone.utc)
+            user.sessions_revoked_before = datetime.now(UTC)
             s.commit()
             print(f"sessions revoked for {argv[1]}")
         return 0

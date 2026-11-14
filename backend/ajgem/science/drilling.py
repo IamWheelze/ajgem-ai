@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
+from itertools import pairwise
 
 from .qualified import Comparator, ParseIssue, parse_result
 from .units import UnitError, convert, normalise_unit
@@ -116,7 +117,7 @@ def validate(collars: list[Collar], surveys: list[Survey], intervals: list[Inter
         by_hole.setdefault(i.hole_id, []).append(i)
     for h, ivs in by_hole.items():
         ivs.sort(key=lambda i: (i.depth_from, i.depth_to))
-        for a, b in zip(ivs, ivs[1:]):
+        for a, b in pairwise(ivs):
             if b.depth_from < a.depth_to:
                 r.add("DRILL_OVERLAP", "critical", h, f"[{a.depth_from}, {a.depth_to}) overlaps [{b.depth_from}, {b.depth_to})", b.ref)
             elif b.depth_from > a.depth_to:
@@ -215,7 +216,7 @@ def trajectory(collar: Collar, surveys: list[Survey], dip_convention: str | None
     signs = {(s.dip < 0) for s in st if s.dip != 0}
     if len(signs) > 1:
         raise DrillError("DRILL_DIP_SIGN_MIXED", "Dips in this hole have both signs; the convention cannot be applied")
-    if dip_convention == "negative_down" and signs == {False} or dip_convention == "positive_down" and signs == {True}:
+    if (dip_convention == "negative_down" and signs == {False}) or (dip_convention == "positive_down" and signs == {True}):
         raise DrillError("DRILL_DIP_SIGN_CONTRADICTS", "Every dip has the sign the stated convention reserves for upward "
                                                        "holes; check the convention")
     corr = float(declination or 0)
@@ -230,7 +231,7 @@ def trajectory(collar: Collar, surveys: list[Survey], dip_convention: str | None
         st = [Survey(collar.hole_id, Decimal(0), st[0].azimuth, st[0].dip, "collar")] + st
     e = n = d = 0.0
     out = [{"md": "0", "east": 0.0, "north": 0.0, "down": 0.0}]
-    for a, b in zip(st, st[1:]):
+    for a, b in pairwise(st):
         i1, a1 = angles(a)
         i2, a2 = angles(b)
         dmd = float(b.md - a.md)

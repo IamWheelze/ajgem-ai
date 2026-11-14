@@ -9,7 +9,7 @@ explicit, recorded act (see ``AnalyteRegistry.approve``).
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 
 ANALYTE_REGISTRY_VERSION = "analytes-2026.11.0"
@@ -96,7 +96,7 @@ class AnalyteRegistry:
             raise ConversionNotApproved(f"No registered factor {element}->{oxide}") from None
 
     def approve(self, element: str, oxide: str, approver: str) -> OxideFactor:
-        f = replace(self.factor(element, oxide), approved_by=approver, approved_at=datetime.now(timezone.utc))
+        f = replace(self.factor(element, oxide), approved_by=approver, approved_at=datetime.now(UTC))
         self.factors[(element, oxide)] = f
         return f
 

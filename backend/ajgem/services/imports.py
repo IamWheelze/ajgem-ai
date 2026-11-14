@@ -13,7 +13,7 @@ import hashlib
 import io
 import json
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from sqlalchemy import select
@@ -396,10 +396,7 @@ def commit(db: Session, ctx: Context, access: ProjectAccess, preview_id: str, pr
                     # sample record; identity joins are reviewed, never silently merged.
                     linked_existing.append({"row": row_no, "sample_key": sk, "existing": [o.id for o in other]})
                     continue
-            if sp["kind"] == "certificate":
-                key = f"{v.id}:{sp['key']}"
-            else:
-                key = f"{v.id}:{sp['key']}"
+            key = f"{v.id}:{sp['key']}"  # spec keys carry their kind ("row:", "cert:"), so they never collide
             anchor_ids, field_anchors = [], {}
             for fname, cell in sp["cells"].items():
                 raw = cell.raw if cell.formula is None else f"{cell.raw} (formula {cell.formula})"
@@ -410,7 +407,7 @@ def commit(db: Session, ctx: Context, access: ProjectAccess, preview_id: str, pr
                 db.flush()
                 anchor_ids.append(a.id)
                 field_anchors[fname] = [a.id]
-            rec, new = create_candidate(
+            _rec, new = create_candidate(
                 db, access, sp["kind"], key, sp["data"], anchor_ids=anchor_ids, field_anchors=field_anchors,
                 method=IMPORTER_VERSION, uncertainty="low", extra_issues=sp["issues"], source_version_id=v.id,
             )
@@ -420,7 +417,7 @@ def commit(db: Session, ctx: Context, access: ProjectAccess, preview_id: str, pr
                 reused += 1
                 for aid in anchor_ids:  # anchors for an existing candidate are redundant
                     db.delete(db.get(SourceAnchor, aid))
-    p.committed_at = datetime.now(timezone.utc)
+    p.committed_at = datetime.now(UTC)
     p.commit_result = {"preview_id": p.id, "created": created, "already_present": reused,
                        "linked_existing_samples": linked_existing}
     audit.record(db, access.principal, "import.commit", "import", p.id, project_id=p.project_id,

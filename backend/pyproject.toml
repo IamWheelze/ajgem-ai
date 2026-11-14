@@ -11,3 +11,20 @@ filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# An explicit set, so a newer ruff does not change what CI enforces.
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "PIE", "RUF"]
+ignore = [
+    "B008",  # FastAPI declares dependencies as Depends(...) defaults
+    "E501",  # line length is left to review; long literals and messages read better unwrapped
+    "RUF001", "RUF002", "RUF003",  # units and geology use °, µ, × and similar on purpose
+    "UP042",  # StrEnum changes how enum values format; not a style-only change
+    "C408",  # dict(a=1) is as clear as {"a": 1}
+    "RUF005",  # [*a, b] and a + [b] are equally clear
+    "SIM103", "SIM110",  # geometry predicates read better as one case per line
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["RUF015"]  # [x for x in rows if ...][0] is fine in a test: a miss fails loudly either way

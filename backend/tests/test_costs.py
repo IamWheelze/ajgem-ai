@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from ajgem.models import AuditEvent, Organisation, UsageEvent
-
 from ajgem.services.llm import Segment
 
 from .conftest import make_pdf, make_scanned_pdf

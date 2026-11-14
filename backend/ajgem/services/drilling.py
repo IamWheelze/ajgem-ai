@@ -75,7 +75,7 @@ def load(db: Session, ctx: Context, access: ProjectAccess, spec: dict):
         md = dep(r.get("md"), r.get("hole_id"), r["_ref"], "survey depth")
         try:
             az, dip = Decimal(str(r.get("azimuth")).strip()), Decimal(str(r.get("dip")).strip())
-        except Exception:  # noqa: BLE001
+        except Exception:
             report.add("DRILL_SURVEY_INVALID", "critical", r.get("hole_id"), "Azimuth or dip is not a number", r["_ref"])
             continue
         if md is not None:
@@ -102,7 +102,7 @@ def _blocking_for(report: D.Report, hole: str) -> list[dict]:
 
 
 def composite(db: Session, ctx: Context, access: ProjectAccess, spec: dict, params: dict) -> dict:
-    collars, surveys, intervals, report, sources = load(db, ctx, access, spec)
+    _collars, _surveys, intervals, report, sources = load(db, ctx, access, spec)
     hole = params.get("hole_id")
     blocking = _blocking_for(report, hole)
     if blocking:
@@ -128,7 +128,7 @@ def composite(db: Session, ctx: Context, access: ProjectAccess, spec: dict, para
 
 
 def trajectory(db: Session, ctx: Context, access: ProjectAccess, spec: dict, params: dict) -> dict:
-    collars, surveys, intervals, report, sources = load(db, ctx, access, spec)
+    collars, surveys, _intervals, report, sources = load(db, ctx, access, spec)
     hole = params.get("hole_id")
     collar = next((c for c in collars if c.hole_id == hole), None)
     if collar is None:

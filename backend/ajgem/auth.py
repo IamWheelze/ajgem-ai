@@ -26,7 +26,7 @@ import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import jwt
 
@@ -38,7 +38,7 @@ DEFAULT_MFA_AMR = {"mfa", "otp", "hwk", "fido", "sc", "hwk+otp"}
 
 def _fetch_json(url: str, timeout: float = 5.0) -> dict:
     req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "ajgem-oidc"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - https URLs from configuration
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
@@ -173,7 +173,7 @@ def resolve_user_id(db, privileged, ident: Identity) -> str:
             raise ApiError("AUTH_REQUIRED", "This account is deactivated")
         cut = u.sessions_revoked_before
         if cut is not None:
-            cut = cut if cut.tzinfo else cut.replace(tzinfo=timezone.utc)
+            cut = cut if cut.tzinfo else cut.replace(tzinfo=UTC)
             if ident.issued_at < int(cut.timestamp()):
                 raise ApiError("AUTH_REQUIRED", "This session was revoked; sign in again")
         return u.id
@@ -187,4 +187,4 @@ def resolve_user_id(db, privileged, ident: Identity) -> str:
 
 
 def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
