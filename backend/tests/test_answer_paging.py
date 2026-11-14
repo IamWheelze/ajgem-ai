@@ -49,10 +49,28 @@ def test_snapshot_lists_are_packed_losslessly():
     from ajgem.db import pack_lists, unpack_lists
 
     rows = [{"a": i, "b": str(i), "c": None} if i % 3 else {"b": "x", "a": i, "equivalent": {"k": [1]}} for i in range(100)]
+    rows += [{"c": None, "b": "y", "a": i} for i in range(5)]  # the same keys as the first shape, in another order
     doc = {"rows": rows, "counts": {"YES": 1}, "short": [{"a": 1}], "mixed": [1, {"a": 2}] * 40}
     packed = pack_lists(doc)
-    assert packed["rows"]["__packed__"] == "shapes-v1" and len(packed["rows"]["shapes"]) == 2
+    assert packed["rows"]["__packed__"] == "shapes-v1" and len(packed["rows"]["shapes"]) == 3
     assert packed["short"] == [{"a": 1}] and packed["mixed"] == doc["mixed"]
     back = unpack_lists(packed)
     assert back == doc and [list(r) for r in back["rows"]] == [list(r) for r in rows]  # key order kept too
     assert unpack_lists({"rows": rows}) == {"rows": rows}  # snapshots written before packing read unchanged
+
+
+def test_a_forked_worker_does_not_reuse_the_parents_side_query_threads(monkeypatch):
+    # Threads do not survive fork(): a child sending work to the parent's pool would wait forever.
+    import os
+
+    import pytest
+
+    if not hasattr(os, "fork"):
+        pytest.skip("no fork on this platform")
+    monkeypatch.setattr(queries, "_side_queries", object())
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - runs in the child
+        os._exit(0 if queries._side_queries is None else 1)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert queries._side_queries is not None  # the parent keeps its pool

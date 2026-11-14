@@ -43,10 +43,16 @@ def pack_lists(doc):
         if isinstance(v, list) and len(v) >= PACK_MIN and all(type(x) is dict for x in v):
             shapes: dict[tuple, int] = {}
             data = []
+            append = data.append
+            last_keys, last_sid = None, 0
             for item in v:
                 keys = tuple(item)
-                sid = shapes.setdefault(keys, len(shapes))
-                data.append([sid, *item.values()])
+                # Rows almost always share one shape. Comparing with the last one (ordered, and fast because the
+                # key strings are the same objects) avoids hashing every row's keys.
+                if keys != last_keys:
+                    last_keys = keys
+                    last_sid = shapes.setdefault(keys, len(shapes))
+                append([last_sid, *item.values()])
             out[k] = {"__packed__": "shapes-v1", "shapes": [list(t) for t in shapes], "data": data}
         else:
             out[k] = v

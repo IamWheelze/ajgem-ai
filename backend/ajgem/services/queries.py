@@ -7,6 +7,7 @@ deterministic calculation description, and is frozen as an answer snapshot.
 
 from __future__ import annotations
 
+import os
 import re
 from decimal import Decimal
 from typing import Any
@@ -21,7 +22,8 @@ from ..science.qualified import QUERY_OPS, Comparator, Outcome, QualifiedValue, 
 from ..science.units import UNIT_REGISTRY_VERSION, UnitError, convert, normalise_basis, normalise_unit
 from .access import ProjectAccess
 from .projects import registry_for
-from .records import RevisionRow, revision, revision_rows, with_revisions
+from ..db import _apply_rls
+from .records import RevisionRow, revision, revision_rows, roomy_sorts, with_revisions
 
 THRESHOLD_TOOL = ("assay_threshold", "1.0.0")
 CENSORING_POLICY = "three-valued interval comparison; censored values are never substituted"
@@ -36,19 +38,67 @@ def _conflict_state(db: Session, project_id: str) -> dict[str, dict]:
     return out
 
 
-def _mapped_samples(db: Session, project_id: str) -> dict[str, bool]:
-    """sample_key -> whether its approved sample has map coordinates (no coordinates are decoded)."""
-    rows = db.connection().execute(
-        select(Record.sample_key, and_(RecordRevision.lon.is_not(None), RecordRevision.lat.is_not(None)))
-        .join(RecordRevision, and_(RecordRevision.record_id == Record.id,
-                                   RecordRevision.revision_no == Record.approved_revision_no))
-        .where(Record.project_id == project_id, Record.kind == "sample", Record.approved_revision_no.is_not(None))
-        .order_by(Record.sample_key, Record.id))
+def _mapped_query(project_id: str):
+    return (select(Record.sample_key, and_(RecordRevision.lon.is_not(None), RecordRevision.lat.is_not(None)))
+            .join(RecordRevision, and_(RecordRevision.record_id == Record.id,
+                                       RecordRevision.revision_no == Record.approved_revision_no))
+            .where(Record.project_id == project_id, Record.kind == "sample", Record.approved_revision_no.is_not(None))
+            .order_by(Record.sample_key, Record.id))
+
+
+def _mapped_from(conn, project_id: str) -> dict[str, bool]:
+    roomy_sorts(conn)
     out: dict[str, bool] = {}
-    for key, mapped in rows.fetchall():
+    for key, mapped in conn.execute(_mapped_query(project_id)).fetchall():
         if key not in out:
             out[key] = bool(mapped)
     return out
+
+
+def _mapped_samples(db: Session, project_id: str) -> dict[str, bool]:
+    """sample_key -> whether its approved sample has map coordinates (no coordinates are decoded)."""
+    return _mapped_from(db.connection(), project_id)
+
+
+_side_queries = None
+
+
+def _forget_side_queries() -> None:
+    # A forked worker inherits the pool object but not its threads; work sent to it would never run.
+    global _side_queries
+    _side_queries = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_side_queries)
+
+
+def _mapped_samples_soon(db: Session, project_id: str):
+    """Start the map-state lookup on a second connection while the caller reads revisions (NF09).
+
+    PostgreSQL only, with the same RLS identity, and only while the pool has a spare connection, so a burst of
+    questions never waits on itself. Returns a function that gives the result. Read-committed, like the main
+    read: each statement sees the data committed when it starts.
+    """
+    global _side_queries
+    bind = db.get_bind()
+    pool = getattr(bind, "pool", None)
+    ctx = dict(db.info.get("rls") or {})
+    if (bind.dialect.name != "postgresql" or not ctx or not hasattr(pool, "checkedout")
+            or pool.checkedout() >= pool.size() - 1):
+        return lambda: _mapped_samples(db, project_id)
+    if _side_queries is None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _side_queries = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ajgem-side-query")
+
+    def run():
+        with bind.connect() as conn, conn.begin():
+            _apply_rls(conn, ctx)
+            return _mapped_from(conn, project_id)
+
+    fut = _side_queries.submit(run)
+    return fut.result
 
 
 # Revision fields the threshold tool reads; the database extracts only these (NF09).
@@ -82,6 +132,7 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
     report_as = params.get("report_as")
     sample_filter = set(params.get("sample_keys") or []) or None
 
+    mapped_result = _mapped_samples_soon(db, access.project.id)
     if frozen is None:
         revs = revision_rows(db, access.project.id, "assay", THRESHOLD_FIELDS)
         inputs = {"revisions": [{"record_id": r.id, "revision_id": rv.id, "revision_no": rv.revision_no} for r, rv in revs],
@@ -176,7 +227,7 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
         rows.append(row)
     # A separate lookup, not a join: PostgreSQL misplans a join against the RLS-filtered sample set at 100,000
     # rows (a nested loop that ran for minutes), while this query stays under a second (NF09).
-    mapped = _mapped_samples(db, access.project.id)
+    mapped = mapped_result()
     mapped_of = {r.id: mapped.get(r.sample_key, False) for r, _ in revs if r is not None}
     for row in rows:
         row["mapped"] = mapped_of.get(row["record_id"], False)
