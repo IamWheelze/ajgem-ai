@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
@@ -30,6 +31,12 @@ def main() -> None:
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--database-url", default=None, help="runtime role URL (default: a throwaway SQLite file)")
     ap.add_argument("--database-admin-url", default=None, help="owner role URL (PostgreSQL)")
+    ap.add_argument("--profile", action="store_true", help="print a cProfile of one threshold question and stop")
+    ap.add_argument("--concurrent", type=int, default=0,
+                    help="also time N users each asking the threshold question, a map and a records page at once")
+    ap.add_argument("--processes", action="store_true",
+                    help="with --concurrent, run each user in its own forked process (as with N server workers), "
+                         "so Python's GIL does not serialise them")
     a = ap.parse_args()
     tmp = Path(tempfile.mkdtemp(prefix="ajgem-qbench-"))
     os.environ.update({"AJGEM_DATABASE_URL": a.database_url or f"sqlite:///{tmp}/bench.db",
@@ -98,11 +105,38 @@ def main() -> None:
             r = fn()
             assert r.status_code == 200, r.text[:300]
             out.append(time.perf_counter() - t)
-        return {"p50": round(statistics.median(out), 3), "p95": round(sorted(out)[max(0, int(len(out) * 0.95) - 1)], 3),
+        return {"p50": round(statistics.median(out), 3), "p95": round(sorted(out)[math.ceil(len(out) * 0.95) - 1], 3),
                 "max": round(max(out), 3)}
 
     q = {"question": "Which samples exceed 1000 ppm Li?"}
     res = c.post(f"/projects/{pid}/questions", json=q, headers=h).json()
+    if a.profile:
+        import cProfile
+        import pstats
+
+        from sqlalchemy import event
+
+        timings: list[tuple[float, str]] = []
+
+        def before(conn, cursor, statement, params, context, many):
+            conn.info["t"] = time.perf_counter()
+
+        def after(conn, cursor, statement, params, context, many):
+            timings.append((time.perf_counter() - conn.info.pop("t"), " ".join(statement.split())[:110]))
+
+        for eng in {app.state.engine, getattr(app.state, "admin_engine", app.state.engine)}:
+            event.listen(eng, "before_cursor_execute", before)
+            event.listen(eng, "after_cursor_execute", after)
+        pr = cProfile.Profile()
+        pr.enable()
+        c.post(f"/projects/{pid}/questions", json=q, headers=h)
+        pr.disable()
+        print("SQL statements, slowest first:")
+        for t, sql in sorted(timings, reverse=True)[:12]:
+            print(f"  {t:7.3f}s  {sql}")
+        print(f"  ({len(timings)} statements, {sum(t for t, _ in timings):.3f}s in total)")
+        pstats.Stats(pr).sort_stats("cumulative").print_stats("ajgem", 30)
+        return
     results = {
         "threshold_question": timed(lambda: c.post(f"/projects/{pid}/questions", json=q, headers=h)),
         "map_features": timed(lambda: c.get(f"/projects/{pid}/features", headers=h)),
@@ -110,6 +144,48 @@ def main() -> None:
         "records_page": timed(lambda: c.get(f"/projects/{pid}/records", params={"kind": "assay", "limit": 500}, headers=h)),
         "search_sample_id": timed(lambda: c.get(f"/projects/{pid}/search", params={"q": "BQ-000123"}, headers=h)),
     }
+    if a.concurrent:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def session(_):
+            t = time.perf_counter()
+            for call in (lambda: c.post(f"/projects/{pid}/questions", json=q, headers=h),
+                         lambda: c.get(f"/projects/{pid}/features", params={"bbox": "7.5,9.0,7.6,9.1"}, headers=h),
+                         lambda: c.get(f"/projects/{pid}/records", params={"kind": "assay", "limit": 500}, headers=h)):
+                r = call()
+                assert r.status_code == 200, r.text[:300]
+            return time.perf_counter() - t
+
+        t = time.perf_counter()
+        if a.processes:
+            import multiprocessing as mp
+
+            ctx = mp.get_context("fork")
+            out_q = ctx.Queue()
+
+            def worker(i):
+                nonlocal c
+                for eng in {app.state.engine, getattr(app.state, "admin_engine", app.state.engine)}:
+                    eng.dispose(close=False)  # never share the parent's connections
+                c = TestClient(app)
+                c.__enter__()
+                out_q.put(session(i))
+
+            procs = [ctx.Process(target=worker, args=(i,)) for i in range(a.concurrent)]
+            for pr in procs:
+                pr.start()
+            per_user = [out_q.get() for _ in procs]
+            for pr in procs:
+                pr.join()
+        else:
+            with ThreadPoolExecutor(a.concurrent) as pool:
+                per_user = list(pool.map(session, range(a.concurrent)))
+        wall = time.perf_counter() - t
+        results["concurrent"] = {"users": a.concurrent, "wall": round(wall, 3),
+                                 "per_user_p50": round(statistics.median(per_user), 3),
+                                 "per_user_max": round(max(per_user), 3),
+                                 "note": "each user: threshold question, map window, records page; "
+                                         + ("one process per user" if a.processes else "threads in one process")}
     c.__exit__(None, None, None)
     print(json.dumps({
         "assays": a.assays, "samples": a.assays, "database": app.state.engine.url.get_backend_name(),

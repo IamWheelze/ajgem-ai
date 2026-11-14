@@ -149,15 +149,25 @@ def guard(answer_segments, passages: list[Passage]) -> tuple[list[dict], dict]:
 
 
 def _anchor(db: Session, access: ProjectAccess, ref: dict, raw: str) -> SourceAnchor:
+    """The anchor for a cited line: page text of a PDF ("pdf_text") or of a rendered Word document ("doc_text",
+    with a renderer-independent locator so the citation survives a re-render)."""
+    from .docx import locate
+
+    pt = db.scalar(select(PageText).where(PageText.version_id == ref["version_id"], PageText.page_index == ref["page_index"]))
+    q = (pt.quality if pt else None) or {}
+    is_doc = q.get("method") == "docx"
+    kind = "doc_text" if is_doc else "pdf_text"
     a = db.scalar(select(SourceAnchor).where(
         SourceAnchor.version_id == ref["version_id"], SourceAnchor.page_index == ref["page_index"],
         SourceAnchor.text_start == ref["text_start"], SourceAnchor.text_end == ref["text_end"],
-        SourceAnchor.kind == "pdf_text"))
+        SourceAnchor.kind == kind))
     if a is None:
         a = SourceAnchor(organisation_id=access.project.organisation_id, project_id=access.project.id,
-                         version_id=ref["version_id"], kind="pdf_text", page_index=ref["page_index"],
+                         version_id=ref["version_id"], kind=kind, page_index=ref["page_index"],
                          page_label=ref.get("page_label"), text_start=ref["text_start"], text_end=ref["text_end"],
-                         raw_text=raw)
+                         raw_text=raw,
+                         locator=locate(q.get("paragraphs") or [], ref["text_start"], ref["text_end"], q.get("renderer"))
+                         if is_doc else None)
         db.add(a)
         db.flush()
     return a

@@ -13,6 +13,8 @@ type Phase = "choose" | "uploading" | "paused" | "decide" | "done";
 
 export default function Upload() {
   const { pid, can, reload, roles } = useProject();
+  const canRender = roles.has("analyst") || roles.has("contributor");
+  const [render, setRender] = useState<{ id: string; r?: RenderReport; err?: unknown } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [tomb, setTomb] = useState<Tombstone | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -95,7 +97,7 @@ export default function Upload() {
           >
             <p><strong>Drop a PDF report or certificate, CSV or XLSX table</strong></p>
             <p className="faint">Limit 100 MB · 500 PDF pages · 100,000 table rows. Macro-enabled workbooks and password-protected PDFs are rejected.</p>
-            <input type="file" accept=".pdf,.csv,.tsv,.txt,.xlsx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} aria-label="Choose file" />
+            <input type="file" accept=".pdf,.docx,.csv,.tsv,.txt,.xlsx,.gpkg" onChange={(e) => setFile(e.target.files?.[0] ?? null)} aria-label="Choose file" />
             {file && <p><strong>{file.name}</strong> · {bytes(file.size)}</p>}
           </div>
           <label className="field">
@@ -150,6 +152,18 @@ export default function Upload() {
       {tomb && <TombstoneSummary t={tomb} />}
       <section className="card">
         <div className="card-head"><h2>Source documents</h2></div>
+        {render && (
+          <div className="card-pad">
+            {render.err ? <ErrorNotice error={render.err} /> : render.r && (
+              <div className={`notice ${render.r.anchors_drifted || render.r.anchors_unplaced ? "warn" : "ok"}`}><div>
+                {!render.r.changed ? <>Already rendered with {render.r.renderer}; nothing to do.</> : <>
+                  Re-rendered with {render.r.after?.renderer} ({render.r.before?.pages} → {render.r.after?.pages} pages). {render.r.anchors_moved} citation(s) moved with their paragraphs
+                  {render.r.anchors_drifted || render.r.anchors_unplaced ? <>; <strong>{(render.r.anchors_drifted ?? 0) + (render.r.anchors_unplaced ?? 0)} could not be placed</strong> and are flagged for checking against the original.</> : "."}
+                </>}
+              </div></div>
+            )}
+          </div>
+        )}
         {!docs.data?.documents.length ? <Empty>No documents yet.</Empty> : (
           <div className="table-wrap" tabIndex={0}>
             <table className="data">
@@ -159,7 +173,10 @@ export default function Upload() {
                   <tr key={v.id}>
                     <td>{d.title}</td>
                     <td>v{v.version_no}</td>
-                    <td>{v.format}</td>
+                    <td>{v.format}{v.format === "docx" && canRender && v.status !== "deleted" && (
+                      <button className="small" style={{ marginLeft: 6 }} title="Render again with the current Word renderer; citations follow their paragraphs"
+                        onClick={async () => { try { setRender({ id: v.id, r: await api.post<RenderReport>(`/versions/${v.id}/rerender`) }); } catch (e) { setRender({ id: v.id, err: e }); } }}>Re-render</button>
+                    )}</td>
                     <td><StatusBadge status={v.status} /></td>
                     <td className="faint">{v.scan_status.replaceAll("_", " ")}</td>
                     <td className="num">{bytes(v.size)}</td>
@@ -200,11 +217,16 @@ function Outcome({ result, onReset }: { result: UploadResult; onReset: () => voi
           {" "}<button className="link" onClick={onReset}>Upload another file</button>
         </div>
       </div>
-      {result.format === "pdf" && result.job_id && <JobPanel jobId={result.job_id} />}
-      {(result.format === "csv" || result.format === "xlsx") && <ImportMapper versionId={result.version_id} format={result.format} />}
+      {(result.format === "pdf" || result.format === "docx") && result.job_id && <JobPanel jobId={result.job_id} />}
+      {(result.format === "csv" || result.format === "xlsx" || result.format === "gpkg") && <ImportMapper versionId={result.version_id} format={result.format} />}
       <p className="faint">Next: <Link to={`/p/${pid}/review`}>review the extracted candidates</Link>.</p>
     </div>
   );
+}
+
+interface RenderReport {
+  changed: boolean; renderer?: string; before?: { renderer: string | null; pages: number }; after?: { renderer: string; pages: number };
+  anchors_moved?: number; anchors_drifted?: number; anchors_unplaced?: number;
 }
 
 export function JobPanel({ jobId }: { jobId: string }) {

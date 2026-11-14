@@ -46,7 +46,16 @@ export function AnchorCard({ anchorId, field, showOriginal = false }: { anchorId
         </div>
         <span className="faint mono" title={v.version!.sha256}>sha256 {v.version!.sha256.slice(0, 12)}…</span>
       </div>
-      {a.kind === "pdf_text" ? (
+      {a.kind === "doc_text" ? (
+        <>
+          <div className="row" style={{ gap: 6 }}>
+            <span className="faint">Word document · rendered page {a.page_label ?? (a.page_index ?? 0) + 1}{a.locator ? ` · paragraph ${a.locator.paragraph + 1}` : ""}</span>
+            {a.locator && <span className="badge" title="Word documents have no fixed pages; the text was rendered by this renderer version, and the citation follows its paragraph if the rendering changes">{a.locator.renderer}</span>}
+            {a.locator?.drift && <span className="badge bad" title={a.locator.drift.reason}>paragraph changed after re-render — check the original</span>}
+          </div>
+          <div className="evidence-text">{v.context ? <Highlighted text={v.context} range={v.context_highlight} /> : a.raw_text}</div>
+        </>
+      ) : a.kind === "pdf_text" ? (
         <>
           <div className="row" style={{ gap: 6 }}>
             <span className="faint">Page {a.page_label ?? (a.page_index ?? 0) + 1} · characters {a.text_start}–{a.text_end}</span>
@@ -73,14 +82,14 @@ export function AnchorCard({ anchorId, field, showOriginal = false }: { anchorId
       )}
       <div className="row">
         <a className="btn small" href={src} target="_blank" rel="noreferrer">Open original ↗</a>
-        {a.kind === "pdf_text" && v.page && (
+        {a.kind === "pdf_text" && v.page?.image_url && (
           <button className="small" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
             {open ? "Hide page" : a.bbox ? "Show region on page" : "Show page"}
           </button>
         )}
         <span className="faint">anchor {shortId(a.id)}</span>
       </div>
-      {open && a.kind === "pdf_text" && v.page && (
+      {open && a.kind === "pdf_text" && v.page?.image_url && (
         <PageImage url={`${API_BASE}${v.page.image_url}`} size={v.page.size} bbox={a.bbox} alt={`${v.version!.filename} page ${(a.page_index ?? 0) + 1}`} />
       )}
     </div>

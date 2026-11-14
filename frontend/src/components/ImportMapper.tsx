@@ -1,5 +1,5 @@
 /** FR07 guided mapping: choose sheet/header/delimiter, map columns and units, confirm CRS, preview, commit. */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, type Issue } from "../lib/api";
 import { useAction, useResource } from "../lib/hooks";
@@ -9,7 +9,7 @@ import { ErrorNotice, Loading } from "./ui";
 interface TableHead {
   format: string;
   header: string[];
-  meta: { sheets?: string[]; sheet?: string; delimiter?: string; encoding?: string };
+  meta: { sheets?: string[]; sheet?: string; delimiter?: string; encoding?: string; layer_crs?: string | null; geometry_type?: string };
   row_count: number;
   sample_rows: { row: number; cells: Record<string, string | null> }[];
   targets: string[];
@@ -29,7 +29,7 @@ const TARGET_LABEL: Record<string, string> = {
 };
 const GUESS: [RegExp, string][] = [
   [/^(sample[\s_-]?id|sample|sampleno|sample[\s_-]?no)$/i, "sample_id"], [/campaign|programme|program/i, "campaign"],
-  [/^(x|easting|east|lon|longitude)$/i, "x"], [/^(y|northing|north|lat|latitude)$/i, "y"],
+  [/^(x|easting|east|lon|longitude|geometry_x)$/i, "x"], [/^(y|northing|north|lat|latitude|geometry_y)$/i, "y"],
   [/cert/i, "certificate_number"], [/^lab/i, "laboratory"], [/method/i, "method"], [/basis/i, "basis"],
   [/^(dl|detection)/i, "detection_limit"], [/type/i, "sample_type"], [/date/i, "collection_date"],
 ];
@@ -60,12 +60,18 @@ export function ImportMapper({ versionId, format }: { versionId: string; format:
   const [consts, setConsts] = useState({ campaign: "", laboratory: "", certificate_number: "", method: "", basis: "" });
   const [preview, setPreview] = useState<Preview | null>(null);
   const [committed, setCommitted] = useState<{ created: Record<string, number>; already_present: number; linked_existing_samples: unknown[] } | null>(null);
+  // A GeoPackage layer declares its CRS: offer it (coordinates are imported as stored, never reprojected), but the
+  // analyst still confirms it like any other CRS.
+  const layerCrs = format === "gpkg" ? head.data?.meta.layer_crs ?? null : null;
+  useEffect(() => {
+    if (layerCrs) setCrs((c) => (c.source_crs === layerCrs ? c : { ...c, source_crs: layerCrs, axis_order: "xy", confirmed: false }));
+  }, [layerCrs]);
   const C = cols ?? guessed.cols;
   const A = analytes ?? guessed.analytes;
 
   const mapping = () => {
     const m: Record<string, unknown> = { header_row: headerRow, columns: Object.fromEntries(Object.entries(C).filter(([, v]) => v)), analytes: A.filter((a) => a.column && a.analyte && a.unit) };
-    if (format === "xlsx" && (sheet ?? head.data?.meta.sheet)) m.sheet = sheet ?? head.data?.meta.sheet;
+    if ((format === "xlsx" || format === "gpkg") && (sheet ?? head.data?.meta.sheet)) m.sheet = sheet ?? head.data?.meta.sheet;
     if (format === "csv") m.delimiter = delimiter || head.data?.meta.delimiter;
     const k = Object.fromEntries(Object.entries(consts).filter(([f, v]) => v && !C[f]));
     if (Object.keys(k).length) m.constants = k;
@@ -87,14 +93,14 @@ export function ImportMapper({ versionId, format }: { versionId: string; format:
       <div className="card-head"><h2>Map columns</h2><span className="faint">{h.row_count} data rows · {h.header.length} columns</span></div>
       <div className="card-pad stack">
         <div className="form-grid">
-          {format === "xlsx" && (
-            <label className="field">Sheet
+          {(format === "xlsx" || format === "gpkg") && (
+            <label className="field">{format === "gpkg" ? "Layer" : "Sheet"}
               <select value={sheet ?? h.meta.sheet} onChange={(e) => { setSheet(e.target.value); setCols(null); setAnalytes(null); }}>
                 {h.meta.sheets?.map((s) => <option key={s}>{s}</option>)}
               </select>
             </label>
           )}
-          <label className="field">Header row<input type="number" min={1} value={headerRow} onChange={(e) => { setHeaderRow(Math.max(1, Number(e.target.value))); setCols(null); setAnalytes(null); }} /></label>
+          {format !== "gpkg" && <label className="field">Header row<input type="number" min={1} value={headerRow} onChange={(e) => { setHeaderRow(Math.max(1, Number(e.target.value))); setCols(null); setAnalytes(null); }} /></label>}
           {format === "csv" && (
             <label className="field">Delimiter
               <select value={delimiter || h.meta.delimiter} onChange={(e) => setDelimiter(e.target.value)}>
@@ -157,9 +163,12 @@ export function ImportMapper({ versionId, format }: { versionId: string; format:
         {hasCoords && (
           <>
             <h3>Coordinate reference</h3>
+            {format === "gpkg" && (layerCrs
+              ? <div className="notice info"><div>Layer <strong>{h.meta.sheet}</strong> declares <strong>{layerCrs}</strong>{h.meta.geometry_type && h.meta.geometry_type !== "GEOMETRY" ? ` (${h.meta.geometry_type.toLowerCase()} geometry)` : ""}. Its coordinates are imported exactly as stored, without reprojection; confirm the CRS to map them. Features that are not points are flagged and left unmapped.</div></div>
+              : <div className="notice warn"><div>Layer <strong>{h.meta.sheet}</strong> has no defined CRS. Enter the CRS the coordinates are in and confirm it, or leave it empty to keep the samples unmapped.</div></div>)}
             <div className="form-grid">
               <label className="field">Source CRS (EPSG code or definition)
-                <input value={crs.source_crs} onChange={(e) => { setCrs({ ...crs, source_crs: e.target.value, confirmed: false }); setPreview(null); }} placeholder="e.g. EPSG:32632 or EPSG:26332" />
+                <input value={crs.source_crs} readOnly={!!layerCrs} onChange={(e) => { setCrs({ ...crs, source_crs: e.target.value, confirmed: false }); setPreview(null); }} placeholder="e.g. EPSG:32632 or EPSG:26332" />
               </label>
               <fieldset className="field" style={{ border: 0, padding: 0, margin: 0 }}>
                 <legend style={{ fontSize: 12.5 }}>Axis order of the columns</legend>

@@ -16,6 +16,7 @@ import Login from "./pages/Login";
 import Projects from "./pages/Projects";
 import Review from "./pages/Review";
 import Targets from "./pages/Targets";
+import Field from "./pages/Field";
 import Upload from "./pages/Upload";
 
 // MapLibre is large; load it only when the map is opened (low-bandwidth, table-first navigation).
@@ -43,6 +44,7 @@ function App() {
         <Route path="assistant" element={<Assistant />} />
         <Route path="conflicts" element={<Conflicts />} />
         <Route path="targets" element={<Targets />} />
+        <Route path="field" element={<Field />} />
         <Route path="jobs" element={<Jobs />} />
         <Route path="admin" element={<Admin />} />
       </Route>

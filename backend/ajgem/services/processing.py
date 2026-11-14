@@ -21,7 +21,7 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import DocumentVersion, Job, JobTask, PageText, SourceAnchor
 from . import audit
-from . import costs, ocr, sandbox
+from . import costs, docx, ocr, sandbox
 from .access import ProjectAccess
 from .answers import provider_permitted
 from .llm import EXTRACTION_ADAPTER_VERSION, InvalidModelOutput, ProviderError, ProviderUnavailable
@@ -53,14 +53,21 @@ def start_pdf_job(db: Session, ctx: Context, access: ProjectAccess, version_id: 
     v = db.get(DocumentVersion, version_id)
     if v is None or v.project_id != access.project.id:
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
-    if v.detected_format != "pdf":
+    if v.detected_format not in ("pdf", "docx"):
         raise ApiError("INPUT_UNSUPPORTED", "Use the structured import preview for tabular files")
-    info, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, inspect_pdf, ctx.store.source(v.storage_key),
-                                    limits=sandbox_limits(ctx.settings))
-    if "error" in info or info.get("encrypted"):
-        raise ApiError("INPUT_UNSUPPORTED", f"PDF cannot be read: {info.get('error', 'encrypted')}")
+    if v.detected_format == "docx":
+        info, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, docx.page_count, ctx.store.source(v.storage_key),
+                                        docx.PARAGRAPHS_PER_PAGE, limits=sandbox_limits(ctx.settings))
+        if "error" in info:
+            raise ApiError("INPUT_UNSUPPORTED", f"Word document cannot be read: {info['error']}")
+    else:
+        info, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, inspect_pdf, ctx.store.source(v.storage_key),
+                                        limits=sandbox_limits(ctx.settings))
+        if "error" in info or info.get("encrypted"):
+            raise ApiError("INPUT_UNSUPPORTED", f"PDF cannot be read: {info.get('error', 'encrypted')}")
     n = info["pages"]
-    job = Job(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id, kind="pdf_extract",
+    kind = "docx_extract" if v.detected_format == "docx" else "pdf_extract"
+    job = Job(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id, kind=kind,
               state="queued", created_by=access.principal.user_id, cost_counters={"pages": n, "ocr_pages": 0})
     db.add(job)
     db.flush()
@@ -362,9 +369,15 @@ def sandbox_limits(settings) -> sandbox.Limits:
 def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersion, data, task: JobTask) -> None:
     """``data`` is the PDF's bytes or a local path to them; parsing itself happens in the sandbox."""
     page_index = int(task.unit_key.split(":")[1])
+    is_docx = v.detected_format == "docx"
     try:
-        parsed, isolated = sandbox.run_or_inline(ctx.settings.parser_sandbox, parse_page, data, page_index,
-                                                 ctx.settings.ocr_timeout_seconds, limits=sandbox_limits(ctx.settings))
+        if is_docx:
+            parsed, iso = sandbox.run_or_inline_with_status(ctx.settings.parser_sandbox, docx.render, data, page_index,
+                                                     docx.PARAGRAPHS_PER_PAGE, docx.RENDERER_VERSION,
+                                                     limits=sandbox_limits(ctx.settings))
+        else:
+            parsed, iso = sandbox.run_or_inline_with_status(ctx.settings.parser_sandbox, parse_page, data, page_index,
+                                                     ctx.settings.ocr_timeout_seconds, limits=sandbox_limits(ctx.settings))
     except sandbox.ParserLimitExceeded as e:
         # Deterministic for this page: retrying would hit the same limit, so the page goes to manual entry.
         task.state, task.issues = "flagged", [issue(e.code, "warning", None, f"{e}; this page needs manual entry")]
@@ -379,7 +392,9 @@ def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersio
     text, lines, method, page_issues, label = (parsed["text"], parsed["lines"], parsed["method"], parsed["issues"],
                                                parsed["label"])
     quality = {**parsed["quality"], "sandbox": {"version": sandbox.SANDBOX_VERSION, "enabled": ctx.settings.parser_sandbox,
-                                                "network_isolated": isolated}}
+                                                "network_isolated": iso["network"], "seccomp": iso["seccomp"]}}
+    if is_docx:
+        quality["paragraphs"] = parsed["paragraphs"]  # where each paragraph starts on the page: locators need it
     costs.record(db, v.organisation_id, v.project_id, "pages", job_id=task.job_id)
     if quality.get("method") == "ocr":
         _cost(db, task, "ocr_pages")
@@ -407,9 +422,11 @@ def run_task(db: Session, ctx: Context, access: ProjectAccess, v: DocumentVersio
                                 max(w.bbox[2] for w in ws), max(w.bbox[3] for w in ws)]
                         conf = min(w.conf for w in ws)
                     break
-        a = SourceAnchor(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id, kind="pdf_text",
+        a = SourceAnchor(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id,
+                         kind="doc_text" if is_docx else "pdf_text",
                          page_index=page_index, page_label=label, text_start=start, text_end=end, raw_text=raw,
-                         bbox=bbox, bbox_convention=ocr.BBOX_CONVENTION if bbox else None, confidence=conf)
+                         bbox=bbox, bbox_convention=ocr.BBOX_CONVENTION if bbox else None, confidence=conf,
+                         locator=docx.locate(quality["paragraphs"], start, end, quality["renderer"]) if is_docx else None)
         db.add(a)
         db.flush()
         return a
@@ -633,3 +650,69 @@ def _model_extraction(db, ctx, access, v, task, lines, matched, anchor_for, head
                              "Model-assisted extraction was rejected after a retry; check this page by hand. "
                              + "; ".join(reasons[:MAX_REASONS])))
     return count, issues_, bool(reasons)
+
+
+# ------------------------------------------------------- DOCX re-rendering (FR23)
+def rerender_docx(db: Session, ctx: Context, access: ProjectAccess, version_id: str) -> dict:
+    """Re-render a Word document with the current renderer and move every citation by its locator.
+
+    Pages are replaced; anchors keep their ids, so records, answers and exports that cite them still resolve.
+    An anchor whose paragraph text no longer matches is left where it was and reported, never moved to a guess.
+    """
+    access.require("import.run")
+    v = db.get(DocumentVersion, version_id)
+    if v is None or v.project_id != access.project.id or v.status == "deleted":
+        raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
+    if v.detected_format != "docx":
+        raise ApiError("INPUT_UNSUPPORTED", "Only Word documents are re-rendered")
+    old = db.scalars(select(PageText).where(PageText.version_id == v.id).order_by(PageText.page_index)).all()
+    before = {"renderer": (old[0].quality or {}).get("renderer") if old else None,
+              "per_page": (old[0].quality or {}).get("per_page") if old else None, "pages": len(old)}
+    if before["renderer"] == docx.RENDERER_VERSION and before["per_page"] == docx.PARAGRAPHS_PER_PAGE:
+        return {"version_id": v.id, "changed": False, "renderer": docx.RENDERER_VERSION, "pages": len(old)}
+    try:
+        r, _ = sandbox.run_or_inline(ctx.settings.parser_sandbox, docx.full_rendering, ctx.store.source(v.storage_key),
+                                     docx.PARAGRAPHS_PER_PAGE, docx.RENDERER_VERSION, limits=sandbox_limits(ctx.settings))
+    except (sandbox.ParserLimitExceeded, sandbox.SandboxError) as e:
+        raise ApiError("INPUT_UNSUPPORTED", f"The document could not be re-rendered within the parser's limits: {e}") from None
+    where: dict[int, tuple[int, int, str]] = {}
+    for pi, page in enumerate(r["pages"]):
+        for p in page["paragraphs"]:
+            where[p["index"]] = (pi, p["start"], p["sha"])
+    keep_quality = (old[0].quality or {}).get("sandbox") if old else None
+    for pt in old:
+        db.delete(pt)
+    db.flush()
+    for pi, page in enumerate(r["pages"]):
+        db.add(PageText(organisation_id=v.organisation_id, project_id=v.project_id, version_id=v.id, page_index=pi,
+                        page_label=str(pi + 1), text=page["text"], method=r["renderer"],
+                        quality={"method": "docx", "renderer": r["renderer"], "page_count": len(r["pages"]),
+                                 "per_page": docx.PARAGRAPHS_PER_PAGE, "paragraphs": page["paragraphs"],
+                                 **({"sandbox": keep_quality} if keep_quality else {})}))
+    moved = drifted = unplaced = 0
+    drifted_ids: list[str] = []
+    for a in db.scalars(select(SourceAnchor).where(SourceAnchor.version_id == v.id, SourceAnchor.kind == "doc_text")):
+        loc = a.locator or {}
+        target = where.get(loc.get("paragraph"))
+        if target is None:
+            unplaced += 1
+            drifted_ids.append(a.id)
+            continue
+        pi, start, sha = target
+        if sha != loc.get("sha"):
+            drifted += 1
+            drifted_ids.append(a.id)
+            a.locator = {**loc, "drift": {"renderer": r["renderer"], "reason": "paragraph text changed"}}
+            continue
+        a.page_index, a.page_label = pi, str(pi + 1)
+        a.text_start, a.text_end = start + loc["start"], start + loc["end"]
+        a.locator = {**loc, "renderer": r["renderer"]}
+        moved += 1
+    report = {"version_id": v.id, "changed": True, "before": before,
+              "after": {"renderer": r["renderer"], "per_page": docx.PARAGRAPHS_PER_PAGE, "pages": len(r["pages"])},
+              "anchors_moved": moved, "anchors_drifted": drifted, "anchors_unplaced": unplaced,
+              "drifted_anchor_ids": drifted_ids[:50]}
+    audit.record(db, access.principal, "version.rerender", "document_version", v.id, project_id=v.project_id,
+                 detail={k: v_ for k, v_ in report.items() if k != "drifted_anchor_ids"})
+    db.flush()
+    return report

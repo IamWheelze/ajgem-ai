@@ -51,6 +51,7 @@ class Settings:
     oidc_mfa_amr: str = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_MFA_AMR", "mfa,otp,hwk,fido,sc"))
     oidc_mfa_acr: str = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_MFA_ACR", ""))
     oidc_max_session_hours: float = field(default_factory=lambda: float(os.environ.get("AJGEM_OIDC_MAX_SESSION_HOURS", "12")))
+    oidc_scopes: str = field(default_factory=lambda: os.environ.get("AJGEM_OIDC_SCOPES", "openid email profile"))
     # Malware scanning (FR03): "signature" (EICAR only, development) or "clamd" (ClamAV daemon; fails closed).
     scanner: str = field(default_factory=lambda: os.environ.get("AJGEM_SCANNER", "signature"))
     clamd_address: str | None = field(default_factory=lambda: os.environ.get("AJGEM_CLAMD_ADDRESS") or None)

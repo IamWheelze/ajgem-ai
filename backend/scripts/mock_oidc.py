@@ -7,8 +7,10 @@ Then run the API with:
 
 It implements just enough of OIDC for a public SPA client: discovery, JWKS, an authorisation page
 where you type an email and choose whether to "use a second factor", PKCE (S256) code exchange, and
-RS256 ID tokens with email_verified=true and amr ["pwd"] or ["pwd","mfa"]. Anyone can sign in as
-anyone: never expose it beyond localhost and never use it with real data.
+RS256 ID tokens with email_verified=true and amr ["pwd"] or ["pwd","mfa"], plus rotating refresh
+tokens: each refresh token works once and is replaced; presenting a used one revokes the whole family
+(reuse detection). MOCK_OIDC_TOKEN_TTL sets the ID token lifetime in seconds (default 3600). Anyone
+can sign in as anyone: never expose it beyond localhost and never use it with real data.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import base64
 import hashlib
 import html
 import json
+import os
 import secrets
 import time
 import urllib.parse
@@ -32,6 +35,9 @@ ISSUER = "http://127.0.0.1:9000"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 KID = "mock-" + secrets.token_hex(4)
 CODES: dict[str, dict] = {}
+REFRESH: dict[str, dict] = {}  # token -> {family, grant, used}
+REVOKED_FAMILIES: set[str] = set()
+TTL = int(os.environ.get("MOCK_OIDC_TOKEN_TTL", "3600"))
 
 app = FastAPI(title="Mock OIDC provider (development only)")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -78,21 +84,40 @@ def authorize(email: str = Form(...), mfa: str | None = Form(None), client_id: s
     return RedirectResponse(f"{redirect_uri}{sep}{urllib.parse.urlencode({'code': code, 'state': state})}", 302)
 
 
+def _issue(grant: dict, family: str, nonce: str | None) -> dict:
+    now = int(time.time())
+    claims = {"iss": ISSUER, "aud": grant["client_id"], "sub": "mock|" + grant["email"], "email": grant["email"],
+              "email_verified": True, "iat": now, "auth_time": grant["auth_time"], "exp": now + TTL,
+              "amr": ["pwd", "mfa"] if grant["mfa"] else ["pwd"]}
+    if nonce:
+        claims["nonce"] = nonce
+    id_token = jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": KID})
+    refresh = secrets.token_urlsafe(32)
+    REFRESH[refresh] = {"family": family, "grant": grant, "used": False}
+    return {"id_token": id_token, "access_token": id_token, "token_type": "Bearer", "expires_in": TTL,
+            "refresh_token": refresh}
+
+
 @app.post("/token")
-def token(grant_type: str = Form(...), code: str = Form(...), redirect_uri: str = Form(...),
-          client_id: str = Form(...), code_verifier: str = Form(...)):
-    c = CODES.pop(code, None)
+def token(grant_type: str = Form(...), code: str | None = Form(None), redirect_uri: str | None = Form(None),
+          client_id: str = Form(...), code_verifier: str | None = Form(None), refresh_token: str | None = Form(None)):
+    if grant_type == "refresh_token":
+        r = REFRESH.get(refresh_token or "")
+        if r is None or r["family"] in REVOKED_FAMILIES or r["grant"]["client_id"] != client_id:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+        if r["used"]:  # replayed: someone else holds a copy, so end the whole sign-in
+            REVOKED_FAMILIES.add(r["family"])
+            return JSONResponse({"error": "invalid_grant", "error_description": "refresh token reuse"}, status_code=400)
+        r["used"] = True
+        return _issue(r["grant"], r["family"], None)
+    c = CODES.pop(code or "", None)
     if grant_type != "authorization_code" or c is None or time.time() - c["at"] > 120:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest()).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(hashlib.sha256((code_verifier or "").encode()).digest()).rstrip(b"=").decode()
     if challenge != c["challenge"] or client_id != c["client_id"] or redirect_uri != c["redirect_uri"]:
         return JSONResponse({"error": "invalid_grant", "error_description": "PKCE or client mismatch"}, status_code=400)
-    now = int(time.time())
-    claims = {"iss": ISSUER, "aud": client_id, "sub": "mock|" + c["email"], "email": c["email"], "email_verified": True,
-              "iat": now, "auth_time": now, "exp": now + 3600, "nonce": c["nonce"],
-              "amr": ["pwd", "mfa"] if c["mfa"] else ["pwd"]}
-    id_token = jwt.encode(claims, KEY, algorithm="RS256", headers={"kid": KID})
-    return {"id_token": id_token, "access_token": id_token, "token_type": "Bearer", "expires_in": 3600}
+    grant = {"client_id": client_id, "email": c["email"], "mfa": c["mfa"], "auth_time": int(time.time())}
+    return _issue(grant, secrets.token_hex(8), c["nonce"])
 
 
 @app.get("/logout")

@@ -46,6 +46,7 @@ from ..models import (
     Project,
     ProjectConfigRevision,
     Record,
+    RasterOverlay,
     RecordRevision,
     Target,
     TargetEvidence,
@@ -133,6 +134,14 @@ def _purge_versions(db: Session, ctx: Context, admin_sessions, access: ProjectAc
         counts["records"] = db.execute(delete(Record).where(Record.id.in_(records))).rowcount
     counts["anchors"] = db.execute(delete(SourceAnchor).where(SourceAnchor.version_id.in_(vids))).rowcount
     counts["page_texts"] = db.execute(delete(PageText).where(PageText.version_id.in_(vids))).rowcount
+    # Raster overlays (FR23) and their display previews are derived from the original: they go too.
+    overlay_rows = db.execute(select(RasterOverlay.id, RasterOverlay.preview_key).where(
+        RasterOverlay.version_id.in_(vids))).all()
+    scrub_ids |= {oid for oid, _ in overlay_rows}
+    counts["overlays"] = db.execute(delete(RasterOverlay).where(RasterOverlay.version_id.in_(vids))).rowcount
+    for _, key in overlay_rows:
+        if key and not db.scalar(select(RasterOverlay.id).where(RasterOverlay.preview_key == key).limit(1)):
+            ctx.store.delete(key)
     previews = list(db.scalars(select(ImportPreview.id).where(ImportPreview.version_id.in_(vids))))
     scrub_ids |= set(previews)
     counts["import_previews"] = db.execute(delete(ImportPreview).where(ImportPreview.version_id.in_(vids))).rowcount

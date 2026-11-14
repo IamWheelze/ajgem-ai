@@ -45,8 +45,9 @@ def _mapped_samples(db: Session, project_id: str) -> dict[str, bool]:
         .where(Record.project_id == project_id, Record.kind == "sample", Record.approved_revision_no.is_not(None))
         .order_by(Record.sample_key, Record.id))
     out: dict[str, bool] = {}
-    for key, mapped in rows:
-        out.setdefault(key, bool(mapped))
+    for key, mapped in rows.fetchall():
+        if key not in out:
+            out[key] = bool(mapped)
     return out
 
 
@@ -124,6 +125,7 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
     factors_used: dict[str, Any] = {}
     analyte_of: dict[str, Any] = {}
     unit_factor: dict[str, Decimal] = {}
+    compared: dict[tuple, dict] = {}
     for r, rv in candidates:
         d = rv.data
         ref = {"record_id": r.id, "revision_id": rv.id, "revision_no": rv.revision_no, "sample_id": d.get("sample_id"),
@@ -143,38 +145,22 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
         if q_basis is not None and basis != q_basis:
             exclusions.append(dict(ref, reason="BASIS_MISMATCH", basis=basis))
             continue
-        try:
-            qv = QualifiedValue(d["result_raw"], Comparator(d["comparator"]), Decimal(d["value"]))
-        except (KeyError, TypeError, ValueError):
-            exclusions.append(dict(ref, reason="RESULT_NOT_NUMERIC"))
+        # The comparison depends only on these values, so it is computed once per distinct combination (NF09).
+        ckey = (d.get("result_raw"), d.get("comparator"), d.get("value"), d.get("unit"), d.get("analyte"))
+        hit = compared.get(ckey)
+        if hit is None:
+            hit = compared[ckey] = _compare(reg, ckey, q_analyte, q_unit, op, threshold, analyte_of, unit_factor,
+                                            factors_used)
+        if "reason" in hit:
+            exclusions.append(dict(ref, **hit))
             continue
-        rec_analyte = analyte_of.get(d["analyte"]) or analyte_of.setdefault(d["analyte"], reg.get(d["analyte"]))
-        try:
-            if rec_analyte.code == q_analyte.code:
-                if d["unit"] not in unit_factor:
-                    unit_factor[d["unit"]] = convert(Decimal(1), d["unit"], q_unit)  # once per unit, not per row
-                in_unit = qv.scaled(unit_factor[d["unit"]])
-                derived = None
-            elif rec_analyte.kind == "element" and q_analyte.kind == "oxide":
-                eq = oxide_equivalent(reg, Decimal(1), rec_analyte.code, q_analyte.code, places=6)
-                factors_used[eq["factor_version"]] = {"factor": str(eq["factor"]), "approved_by": eq["factor_approved_by"]}
-                in_unit = qv.scaled(convert(Decimal(1), d["unit"], q_unit) * eq["factor"])
-                derived = f"calculated {q_analyte.code} equivalent from reported {rec_analyte.code}"
-            else:
-                exclusions.append(dict(ref, reason="ANALYTE_SPECIES_MISMATCH", reported=rec_analyte.code))
-                continue
-        except UnitError as e:
-            exclusions.append(dict(ref, reason=e.code))
-            continue
-        except ConversionNotApproved as e:
-            raise ApiError("CONVERSION_NOT_APPROVED", str(e)) from None
-        outcome = evaluate(in_unit, op, threshold)
+        qv, rec_analyte = hit["qv"], hit["analyte"]
         row = dict(
             ref,
-            analyte=rec_analyte.code, result_raw=d["result_raw"], comparator=qv.comparator.value,
-            value=str(qv.value), unit=d["unit"], basis=basis, method=d.get("method"),
-            compared_value=plain(in_unit.value), compared_unit=q_unit, derived=derived,
-            outcome=outcome.value, anchor_ids=rv.anchor_ids, stale=r.stale,
+            analyte=rec_analyte.code, result_raw=d["result_raw"], comparator=hit["comparator"],
+            value=hit["value"], unit=d["unit"], basis=basis, method=d.get("method"),
+            compared_value=hit["compared_value"], compared_unit=q_unit, derived=hit["derived"],
+            outcome=hit["outcome"], anchor_ids=rv.anchor_ids, stale=r.stale,
         )
         if report_as and report_as != rec_analyte.code:
             try:
@@ -188,10 +174,12 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
                 "rounding": eq["rounding"], "note": eq["note"],
             }
         rows.append(row)
+    # A separate lookup, not a join: PostgreSQL misplans a join against the RLS-filtered sample set at 100,000
+    # rows (a nested loop that ran for minutes), while this query stays under a second (NF09).
     mapped = _mapped_samples(db, access.project.id)
-    key_of = {r.id: r.sample_key for r, _ in revs if r is not None}
+    mapped_of = {r.id: mapped.get(r.sample_key, False) for r, _ in revs if r is not None}
     for row in rows:
-        row["mapped"] = mapped.get(key_of.get(row["record_id"]), False)
+        row["mapped"] = mapped_of.get(row["record_id"], False)
     counts = {o.value: sum(1 for r in rows if r["outcome"] == o.value) for o in Outcome}
     result = {
         "tool": THRESHOLD_TOOL[0], "tool_version": THRESHOLD_TOOL[1],
@@ -217,6 +205,36 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
         result["answer_id"] = snap.id
         result["state"] = snap.state
     return result
+
+
+def _compare(reg, ckey: tuple, q_analyte, q_unit: str, op: str, threshold: Decimal, analyte_of: dict,
+             unit_factor: dict, factors_used: dict) -> dict:
+    """Compare one reported result with the threshold: the outcome, or the exclusion reason (as a dict)."""
+    result_raw, comparator, value, unit, analyte = ckey
+    try:
+        qv = QualifiedValue(result_raw, Comparator(comparator), Decimal(value))
+    except (KeyError, TypeError, ValueError, ArithmeticError):
+        return {"reason": "RESULT_NOT_NUMERIC"}
+    rec_analyte = analyte_of.get(analyte) or analyte_of.setdefault(analyte, reg.get(analyte))
+    try:
+        if rec_analyte.code == q_analyte.code:
+            if unit not in unit_factor:
+                unit_factor[unit] = convert(Decimal(1), unit, q_unit)  # once per unit, not per row
+            in_unit = qv.scaled(unit_factor[unit])
+            derived = None
+        elif rec_analyte.kind == "element" and q_analyte.kind == "oxide":
+            eq = oxide_equivalent(reg, Decimal(1), rec_analyte.code, q_analyte.code, places=6)
+            factors_used[eq["factor_version"]] = {"factor": str(eq["factor"]), "approved_by": eq["factor_approved_by"]}
+            in_unit = qv.scaled(convert(Decimal(1), unit, q_unit) * eq["factor"])
+            derived = f"calculated {q_analyte.code} equivalent from reported {rec_analyte.code}"
+        else:
+            return {"reason": "ANALYTE_SPECIES_MISMATCH", "reported": rec_analyte.code}
+    except UnitError as e:
+        return {"reason": e.code}
+    except ConversionNotApproved as e:
+        raise ApiError("CONVERSION_NOT_APPROVED", str(e)) from None
+    return {"qv": qv, "analyte": rec_analyte, "comparator": qv.comparator.value, "value": str(qv.value),
+            "compared_value": plain(in_unit.value), "derived": derived, "outcome": evaluate(in_unit, op, threshold).value}
 
 
 def plain(d: Decimal) -> str:

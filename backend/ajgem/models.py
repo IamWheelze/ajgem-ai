@@ -25,7 +25,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .db import Base, ExactDecimal, new_id, utcnow
+from .db import Base, ExactDecimal, PackedJSON, new_id, utcnow
 
 
 def _id() -> Mapped[str]:
@@ -217,6 +217,9 @@ class SourceAnchor(Base):
     raw_text: Mapped[str] = mapped_column(Text, default="")
     # OCR word confidence (0-100) for the anchored words; null for native text and table cells.
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # DOCX (kind "doc_text"): renderer-independent position, so the citation survives a re-render (FR23):
+    # {"renderer", "paragraph", "start", "end", "sha"}.
+    locator: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Job(Base):
@@ -346,8 +349,8 @@ class AnswerSnapshot(Base):
     tool: Mapped[str] = mapped_column(String(64))
     tool_version: Mapped[str] = mapped_column(String(32))
     params: Mapped[dict] = mapped_column(JSON)
-    inputs: Mapped[dict] = mapped_column(JSON)  # frozen record revisions + decision state
-    result: Mapped[dict] = mapped_column(JSON)
+    inputs: Mapped[dict] = mapped_column(PackedJSON)  # frozen record revisions + decision state
+    result: Mapped[dict] = mapped_column(PackedJSON)
     analyte_element: Mapped[str | None] = mapped_column(String(8), nullable=True, index=True)
     state: Mapped[str] = mapped_column(String(24), default="current")  # current|stale|evidence_removed
     stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -486,3 +489,76 @@ class TargetEvidence(Base):
     linked_at: Mapped[datetime] = _ts()
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     removed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class RasterOverlay(Base):
+    """FR23: a georeferenced raster (GeoTIFF) validated for display on the map. Flagged overlays are never shown."""
+
+    __tablename__ = "raster_overlays"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    version_id: Mapped[str] = mapped_column(ForeignKey("document_versions.id"), index=True)
+    name: Mapped[str] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(16))  # valid | flagged
+    crs: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    bounds: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [minx, miny, maxx, maxy] in crs, exact text
+    pixel_size: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    corners: Mapped[list | None] = mapped_column(JSON, nullable=True)  # WGS 84 [[lon, lat] x4] TL, TR, BR, BL
+    transform: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # pipeline and accuracy used for the corners
+    issues: Mapped[list] = mapped_column(JSON, default=list)
+    preview_key: Mapped[str] = mapped_column(String(500), default="")
+    # FR26 control-point georeferencing of scanned maps: points, the fit, and a second person's approval.
+    control_points: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    georef: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    georef_status: Mapped[str] = mapped_column(String(16), default="none", server_default="none")  # none|draft|approved
+    georef_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_raster_overlays_georef_by"), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_raster_overlays_approved_by"),
+                                                    nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _ts()
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+
+
+class Device(Base):
+    """FR25: a registered field device. Its secret is stored hashed; a revoked device can never sync again."""
+
+    __tablename__ = "devices"
+    id: Mapped[str] = _id()
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", name="fk_devices_user_id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    secret_hash: Mapped[str] = mapped_column(String(64))
+    cache_ttl_hours: Mapped[int] = mapped_column(Integer, default=72)
+    registered_at: Mapped[datetime] = _ts()
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_devices_revoked_by"), nullable=True)
+
+
+class FieldDraft(Base):
+    """FR25: a field observation captured offline. The id is the client's UUID, so re-sending is idempotent.
+
+    Drafts by different people for the same sample are all kept, marked ``conflict``, until a reviewer
+    keeps one; only then does it become a sample record for normal review.
+    """
+
+    __tablename__ = "field_drafts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    organisation_id: Mapped[str] = mapped_column(ForeignKey("organisations.id"))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id"), index=True)
+    sample_key: Mapped[str] = mapped_column(String(200), index=True)
+    data: Mapped[dict] = mapped_column(JSON)
+    client_revision: Mapped[int] = mapped_column(Integer, default=1)
+    client_updated_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|conflict|accepted|superseded
+    record_id: Mapped[str | None] = mapped_column(ForeignKey("records.id"), nullable=True)
+    resolution_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id", name="fk_field_drafts_resolved_by"),
+                                                    nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synced_at: Mapped[datetime] = _ts()
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id", name="fk_field_drafts_created_by"))

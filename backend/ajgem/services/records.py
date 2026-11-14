@@ -305,12 +305,13 @@ def revision_rows(db: Session, project_id: str, kind: str, fields: tuple[str, ..
          .where(Record.project_id == project_id, Record.kind == kind, Record.approved_revision_no.is_not(None))
          .order_by(Record.sample_key, Record.id))
     out = []
-    for row in db.connection().execute(q):
-        rid, key, stale, vid, no, anchors, doc = row
-        full = json.loads(doc) if doc else {}
-        data = {k: (None if full.get(k) is None else str(full[k])) for k in fields}
+    loads = json.loads
+    # fetchall() hands rows over in bulk; iterating the result row by row cost more than the query itself (NF09).
+    for rid, key, stale, vid, no, anchors, doc in db.connection().execute(q).fetchall():
+        full = loads(doc) if doc else {}
+        data = {k: (None if (v := full.get(k)) is None else v if isinstance(v, str) else str(v)) for k in fields}
         out.append((RecordRow(rid, key, bool(stale)),
-                    RevisionRow(vid, no, data, json.loads(anchors) if anchors and anchors != "[]" else [])))
+                    RevisionRow(vid, no, data, loads(anchors) if anchors and anchors != "[]" else [])))
     return out
 
 

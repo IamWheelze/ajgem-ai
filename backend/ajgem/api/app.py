@@ -46,7 +46,7 @@ from ..models import (
 )
 from ..services import exports as exports_svc
 from ..services import imports as imports_svc
-from ..services import costs, deletion, processing, targets, projects, queries, records, uploads
+from ..services import costs, deletion, drilling, field, overlays, processing, targets, projects, queries, records, uploads
 from ..services.access import Principal, ProjectAccess, accessible_project_ids, load_principal, project_access
 from . import schemas as S
 
@@ -96,6 +96,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         oidc = OidcVerifier(OidcSettings(
             issuer=settings.oidc_issuer, client_id=settings.oidc_client_id, audience=settings.oidc_audience,
             jwks_url=settings.oidc_jwks_url, max_session_age_seconds=int(settings.oidc_max_session_hours * 3600),
+            scopes=settings.oidc_scopes,
             mfa_amr={a.strip() for a in settings.oidc_mfa_amr.split(",") if a.strip()},
             mfa_acr={a.strip() for a in settings.oidc_mfa_acr.split(",") if a.strip()}))
     elif settings.auth_mode != "dev":
@@ -248,7 +249,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if result["status"] == "quarantined":
             s.commit()
             raise ApiError("FILE_QUARANTINED", f"File quarantined by malware scan: {result['reason']}")
-        if result["status"] == "stored" and result["format"] == "pdf" and "job_id" not in result:
+        if result["status"] == "stored" and result["format"] in ("geotiff", "image") and "overlay_id" not in result:
+            o = overlays.create_from_version(s, ctx, a, result["version_id"])
+            result = dict(result, overlay_id=o.id, overlay_status=o.status)
+            s.get(UploadSession, uid).result = result
+        if result["status"] == "stored" and result["format"] in ("pdf", "docx") and "job_id" not in result:
             job = processing.start_pdf_job(s, ctx, a, result["version_id"])
             result = dict(result, job_id=job.id)
             s.get(UploadSession, uid).result = result
@@ -501,6 +506,88 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return Response(e.payload, media_type="application/zip",
                         headers={"Content-Disposition": f'attachment; filename="export-{e.id}.zip"',
                                  "Cache-Control": "private, no-store"})
+
+    @app.get("/projects/{pid}/overlays")
+    def list_overlays(pid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"overlays": overlays.list_overlays(s, ctx, project_access(s, p, pid))}
+
+    @app.get("/overlays/{oid}/image.png")
+    def overlay_image(oid: str, token: str, u: str, x_user_id: str | None = Header(default=None),
+                      s: Session = Depends(db)):
+        if x_user_id is not None and x_user_id != u:
+            raise forbidden()
+        from ..models import RasterOverlay
+
+        p = load_principal(s, u)
+        a, _ = via(RasterOverlay, oid, s, p)
+        return Response(overlays.image(s, ctx, a, oid, token), media_type="image/png",
+                        headers={"Cache-Control": "private, no-store"})
+
+    @app.put("/overlays/{oid}/control-points")
+    def set_control_points(oid: str, body: S.ControlPointsIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        from ..models import RasterOverlay
+
+        a, _ = via(RasterOverlay, oid, s, p)
+        o = overlays.set_control_points(s, a, oid, body.crs, [x.model_dump() for x in body.points])
+        return overlays.view(o, ctx, p.user_id)
+
+    @app.post("/overlays/{oid}/approve-georeference")
+    def approve_georeference(oid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        from ..models import RasterOverlay
+
+        a, _ = via(RasterOverlay, oid, s, p)
+        return overlays.view(overlays.approve_georef(s, a, oid), ctx, p.user_id)
+
+    @app.post("/projects/{pid}/drilling/validate")
+    def drilling_validate(pid: str, body: S.DrillingIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return drilling.validate_view(s, ctx, project_access(s, p, pid), body.spec)
+
+    @app.post("/projects/{pid}/drilling/composite")
+    def drilling_composite(pid: str, body: S.DrillingIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return drilling.composite(s, ctx, project_access(s, p, pid), body.spec, body.params)
+
+    @app.post("/projects/{pid}/drilling/trajectory")
+    def drilling_trajectory(pid: str, body: S.DrillingIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return drilling.trajectory(s, ctx, project_access(s, p, pid), body.spec, body.params)
+
+    # ------------------------------------------------------------ FR25 offline field capture
+    def org_admin(s: Session, p: Principal) -> bool:
+        from ..models import Membership
+
+        rows = s.scalars(select(Membership).where(Membership.user_id == p.user_id, Membership.revoked_at.is_(None)))
+        return p.mfa and any("admin" in (m.roles or []) for m in rows)
+
+    @app.post("/devices", status_code=201)
+    def register_device(body: S.DeviceIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return field.register(s, p, body.name, body.cache_ttl_hours)
+
+    @app.get("/devices")
+    def list_devices(s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"devices": field.list_devices(s, p, org_admin(s, p))}
+
+    @app.post("/devices/{did}/revoke")
+    def revoke_device(did: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return field.revoke(s, p, did, org_admin(s, p))
+
+    @app.post("/projects/{pid}/field/sync")
+    def field_sync(pid: str, body: S.FieldSyncIn, s: Session = Depends(db), p: Principal = Depends(principal),
+                   x_device_id: str | None = Header(default=None), x_device_secret: str | None = Header(default=None)):
+        return field.sync(s, project_access(s, p, pid), x_device_id, x_device_secret,
+                          [d.model_dump() for d in body.drafts])
+
+    @app.get("/projects/{pid}/field/drafts")
+    def field_drafts(pid: str, status: str | None = None, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return {"drafts": field.list_drafts(s, project_access(s, p, pid), status)}
+
+    @app.post("/projects/{pid}/field/resolve")
+    def field_resolve(pid: str, body: S.FieldResolveIn, s: Session = Depends(db), p: Principal = Depends(principal)):
+        return field.resolve(s, project_access(s, p, pid), body.keep_draft_id, body.reason)
+
+    @app.post("/versions/{vid}/rerender")
+    def rerender(vid: str, s: Session = Depends(db), p: Principal = Depends(principal)):
+        """FR23: re-render a Word document with the current renderer; citations move by their locators."""
+        a, _ = via(DocumentVersion, vid, s, p)
+        return processing.rerender_docx(s, ctx, a, vid)
 
     # ------------------------------------------------------------ targets and checklists (FR18)
     @app.get("/projects/{pid}/checklists")

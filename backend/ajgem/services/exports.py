@@ -16,12 +16,12 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import ConflictGroup, DocumentVersion, Export, PageText, Record, RecordRevision, SourceAnchor
 from ..science.analytes import ANALYTE_REGISTRY_VERSION
-from ..science import gpkg
+from ..science import gpkg, mapimage
 from ..science.csvsafe import escape_cell
 from ..science.units import UNIT_REGISTRY_VERSION
 from . import audit
 from .access import ProjectAccess
-from .records import with_revisions
+from .records import _boundary, with_revisions
 
 EXPORT_COLUMNS = [
     "sample_id", "campaign", "analyte", "result_raw", "comparator", "value", "unit", "basis", "method",
@@ -48,14 +48,16 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
     if v.status == "deleted":
         return {"available": False, "reason": "EVIDENCE_DELETED", "message": "Evidence removed; cannot support a claim"}
     context, highlight, page, text_box = None, None, None, None
-    if a.kind == "pdf_text":
+    if a.kind in ("pdf_text", "doc_text"):
         pt = db.scalar(select(PageText).where(PageText.version_id == v.id, PageText.page_index == a.page_index))
         if pt:
             q = pt.quality or {}
             token = ctx.signer.sign(v.id, access.principal.user_id)
-            page = {"method": pt.method, "size": q.get("page_size"), "quality": q,
+            page = {"method": pt.method, "size": q.get("page_size"),
+                    "quality": {k: val for k, val in q.items() if k != "paragraphs"},
+                    # Word documents have no fixed page image: their frozen rendering is the text itself.
                     "image_url": (f"/sources/{v.id}/pages/{a.page_index}.png?u={access.principal.user_id}"
-                                  f"&token={token}")}
+                                  f"&token={token}") if v.detected_format == "pdf" else None}
         if pt and a.bbox is None and a.text_start is not None and a.raw_text and q.get("method") == "text_layer":
             text_box = _text_layer_box(ctx, v, pt.text, a)
         if pt and a.text_start is not None:
@@ -68,7 +70,7 @@ def anchor_view(db: Session, ctx: Context, access: ProjectAccess, version_id: st
         "available": True,
         "version": {"id": v.id, "document_id": v.document_id, "version_no": v.version_no, "filename": v.filename,
                     "sha256": v.sha256, "status": v.status, "superseded": v.status == "superseded"},
-        "anchor": {"id": a.id, "kind": a.kind, "page_index": a.page_index, "page_label": a.page_label,
+        "anchor": {"id": a.id, "kind": a.kind, "locator": a.locator, "page_index": a.page_index, "page_label": a.page_label,
                    "bbox": a.bbox or text_box, "bbox_source": "ocr" if a.bbox else ("text_layer" if text_box else None),
                    "text_start": a.text_start, "text_end": a.text_end, "sheet": a.sheet,
                    "row_number": a.row_number, "column": a.column, "cell_ref": a.cell_ref, "raw_text": a.raw_text,
@@ -311,6 +313,11 @@ def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: 
         data_name, data = "data.geojson", as_geojson(rows, EXPORT_COLUMNS)
         samples_name, samples_data = "samples.geojson", as_geojson(sample_rows, SAMPLE_COLUMNS)
     now = datetime.now(timezone.utc)
+    pts = [(float(r["lon"]), float(r["lat"])) for r in sample_rows if r["lon"] is not None and r["lat"] is not None]
+    map_png = mapimage.render(f"{access.project.name}: exported samples", _boundary(db, pid), pts,
+                              withheld=not exact_coords,
+                              unmapped=sum(1 for r in sample_rows if r["coordinate_status"] == "unmapped"),
+                              subtitle=f"Approved revisions as of {now:%Y-%m-%d %H:%M} UTC; purpose: {purpose}")
     manifest = {
         "export_format": fmt, "created_at": now.isoformat(), "created_by": access.principal.user_id,
         "project_id": pid, "project_name": access.project.name, "purpose": purpose, "filters": filters,
@@ -332,6 +339,8 @@ def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: 
                      "rights_statement": v.rights_statement} for v in versions.values() if v],
         "attribution": "Source documents remain subject to their original rights; no portability beyond those rights is implied.",
         "data_file": data_name, "data_sha256": hashlib.sha256(data).hexdigest(),
+        "map_file": "map.png", "map_sha256": hashlib.sha256(map_png).hexdigest(),
+        "map": "Locator figure of the boundary and approved sample positions (none when coordinates are withheld)",
         **({"samples_file": samples_name, "samples_sha256": hashlib.sha256(samples_data).hexdigest(),
             "columns": {data_name: EXPORT_COLUMNS, samples_name: SAMPLE_COLUMNS}} if samples_name else
            {"columns": {f"{data_name}:assays": EXPORT_COLUMNS, f"{data_name}:samples": SAMPLE_COLUMNS}}),
@@ -341,6 +350,7 @@ def _build(db: Session, ctx: Context, access: ProjectAccess, fmt: str, filters: 
         z.writestr(data_name, data)
         if samples_name:
             z.writestr(samples_name, samples_data)
+        z.writestr("map.png", map_png)
         z.writestr("evidence_summary.md", evidence_summary(access.project.name, purpose, filters, rows, sample_rows,
                                                            list(versions.values()), manifest))
         z.writestr("manifest.json", json.dumps(manifest, indent=1, default=str))

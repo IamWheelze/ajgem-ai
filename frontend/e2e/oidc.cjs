@@ -27,6 +27,20 @@ const ok = (cond, msg) => { if (!cond) throw new Error("expected: " + msg); cons
   };
   await signIn("reviewer2@kano.example", false);
   console.log("✓ signed in via mock IdP (code + PKCE), landed on /projects");
+  // Refresh-token rotation: run the IdP with MOCK_OIDC_TOKEN_TTL=70 so the ID token is due for renewal at once.
+  const tokens = () => page.evaluate(() => ({ id: sessionStorage.getItem("ajgem.idToken"), rt: sessionStorage.getItem("ajgem.refreshToken") }));
+  const t0 = await tokens();
+  ok(!!t0.rt, "the provider's refresh token is kept for this browser session only");
+  const life = await page.evaluate((t) => { const c = JSON.parse(atob(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))); return c.exp - c.iat; }, t0.id);
+  if (life <= 120) {
+    await page.waitForTimeout(11_000);
+    await page.reload();
+    await page.getByRole("link", { name: /Kano/ }).waitFor();
+    const t1 = await tokens();
+    ok(t1.rt && t1.rt !== t0.rt && t1.id !== t0.id, "an expiring ID token is renewed and the refresh token rotated");
+  } else {
+    console.log("· token rotation check skipped (set MOCK_OIDC_TOKEN_TTL=70 on the mock IdP)");
+  }
   await page.getByRole("link", { name: /Kano/ }).click();
   await page.waitForSelector(".tiles");
   console.log("✓ sidebar:", (await page.locator(".side-foot").innerText()).replace(/\n/g, " | "));

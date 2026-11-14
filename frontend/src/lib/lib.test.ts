@@ -3,6 +3,8 @@ import { qualified, reasonText } from "./format";
 import { circlePolygon, inBBox, normaliseBBox } from "./geo";
 import { guessColumns } from "../components/ImportMapper";
 import { evidenceItems } from "../components/SourceEvidence";
+import { editDraft, isExpired } from "./offline";
+import { needsRefresh } from "./auth";
 
 describe("upload planning", () => {
   it("resumes only the missing ranges, chunked", () => {
@@ -49,5 +51,28 @@ describe("evidence items", () => {
       { anchorId: "b", field: "result_raw, unit" },
       { anchorId: "c", field: undefined },
     ]);
+  });
+});
+
+describe("offline field cache", () => {
+  it("treats a missing or past expiry as expired and keeps draft ids across edits", () => {
+    const now = new Date("2026-11-12T00:00:00Z");
+    expect(isExpired(null, now)).toBe(true);
+    expect(isExpired("2026-11-11T23:59:59Z", now)).toBe(true);
+    expect(isExpired("2026-11-12T00:00:01Z", now)).toBe(false);
+    const d = { id: "u1", pid: "p", data: { sample_id: "A" }, client_revision: 1, client_updated_at: "", status: "pending" as const, dirty: false };
+    const e = editDraft(d, { sample_id: "A", raw_x: "1" }, now);
+    expect(e.id).toBe("u1");
+    expect(e.client_revision).toBe(2);
+    expect(e.dirty).toBe(true);
+  });
+});
+
+describe("token renewal", () => {
+  it("renews shortly before expiry, not before", () => {
+    const now = 1_000_000_000_000;
+    expect(needsRefresh(now / 1000 + 30, now)).toBe(true);
+    expect(needsRefresh(now / 1000 + 600, now)).toBe(false);
+    expect(needsRefresh(undefined, now)).toBe(true);
   });
 });

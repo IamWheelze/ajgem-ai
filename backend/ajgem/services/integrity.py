@@ -89,7 +89,7 @@ def verify(db, store) -> Report:
         if v is None or v.status == "deleted":
             r.problem("ANCHOR_VERSION_MISSING", a.id)
             continue
-        if a.kind == "pdf_text" and a.text_start is not None:
+        if a.kind in ("pdf_text", "doc_text") and a.text_start is not None:
             text = pages.get((a.version_id, a.page_index))
             if text is None:
                 r.problem("ANCHOR_PAGE_TEXT_MISSING", a.id)
