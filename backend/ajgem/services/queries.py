@@ -83,7 +83,7 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
     sample_filter = set(params.get("sample_keys") or []) or None
 
     if frozen is None:
-        revs = revision_rows(db, access.project.id, "assay", THRESHOLD_FIELDS, with_mapped=True)
+        revs = revision_rows(db, access.project.id, "assay", THRESHOLD_FIELDS)
         inputs = {"revisions": [{"record_id": r.id, "revision_id": rv.id, "revision_no": rv.revision_no} for r, rv in revs],
                   "conflicts": _conflict_state(db, access.project.id)}
     else:
@@ -174,11 +174,10 @@ def assay_threshold(db: Session, access: ProjectAccess, params: dict, *, frozen:
                 "rounding": eq["rounding"], "note": eq["note"],
             }
         rows.append(row)
-    if frozen is None:
-        mapped_of = {r.id: bool(r.mapped) for r, _ in revs}
-    else:  # a re-run reads the frozen revisions by id, so the current map state is looked up separately
-        mapped = _mapped_samples(db, access.project.id)
-        mapped_of = {r.id: mapped.get(r.sample_key, False) for r, _ in revs if r is not None}
+    # A separate lookup, not a join: PostgreSQL misplans a join against the RLS-filtered sample set at 100,000
+    # rows (a nested loop that ran for minutes), while this query stays under a second (NF09).
+    mapped = _mapped_samples(db, access.project.id)
+    mapped_of = {r.id: mapped.get(r.sample_key, False) for r, _ in revs if r is not None}
     for row in rows:
         row["mapped"] = mapped_of.get(row["record_id"], False)
     counts = {o.value: sum(1 for r in rows if r["outcome"] == o.value) for o in Outcome}

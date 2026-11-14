@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
@@ -104,7 +105,7 @@ def main() -> None:
             r = fn()
             assert r.status_code == 200, r.text[:300]
             out.append(time.perf_counter() - t)
-        return {"p50": round(statistics.median(out), 3), "p95": round(sorted(out)[max(0, int(len(out) * 0.95) - 1)], 3),
+        return {"p50": round(statistics.median(out), 3), "p95": round(sorted(out)[math.ceil(len(out) * 0.95) - 1], 3),
                 "max": round(max(out), 3)}
 
     q = {"question": "Which samples exceed 1000 ppm Li?"}
