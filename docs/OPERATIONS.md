@@ -137,7 +137,9 @@ The changes behind these figures:
 
 Joining the mapped-sample lookup into the main query was tried and reverted. At 100,000 rows PostgreSQL planned it as a nested loop over the RLS-filtered sample set, which ran for more than 20 minutes. The separate lookup takes under a second.
 
-The threshold question is still about 0.9 s over its 3 s target in this worst case, where every result is the queried analyte. The remaining time is mostly the two database reads (about 1.3 s together) and building the rows in Python. Repeat on the pilot database server: managed PostgreSQL on its own host behaves differently from this shared 4-core machine.
+**Later on 2026-11-14:** the map-state lookup now runs on a second connection while the main read runs, and the two large reads sort in memory instead of spilling to disk. Measured back to back on the same loaded data, the threshold question averages about 3.0 s, down from 3.4 s, with individual calls between 2.7 and 3.1 s. The full benchmark run straight after gave p50 3.4 s and p95 4.0 s. The full map, which did not change, was also slower in that run (p95 5.1 s), so the machine was busier than earlier.
+
+The threshold question is therefore at its 3 s target on this machine, but not reliably under it, in this worst case where every result is the queried analyte. What remains is mostly building and storing the frozen snapshot (about 1 s for 100,000 rows) and reading the revisions (about 1.1 s). Repeat on the pilot database server: managed PostgreSQL on its own host behaves differently from this shared 4-core machine.
 
 ## Monitoring
 
