@@ -7,6 +7,7 @@ deterministic calculation description, and is frozen as an answer snapshot.
 
 from __future__ import annotations
 
+import os
 import re
 from decimal import Decimal
 from typing import Any
@@ -60,6 +61,16 @@ def _mapped_samples(db: Session, project_id: str) -> dict[str, bool]:
 
 
 _side_queries = None
+
+
+def _forget_side_queries() -> None:
+    # A forked worker inherits the pool object but not its threads; work sent to it would never run.
+    global _side_queries
+    _side_queries = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_side_queries)
 
 
 def _mapped_samples_soon(db: Session, project_id: str):
