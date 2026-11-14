@@ -54,7 +54,7 @@ def inspect(source) -> dict:
         im = Image.open(io.BytesIO(data))
         width, height = im.size
         tags = dict(im.tag_v2) if hasattr(im, "tag_v2") else {}
-    except Exception as e:  # noqa: BLE001 - any decoding failure means the file is refused
+    except Exception as e:
         return {"error": f"not a readable TIFF ({e.__class__.__name__}: {e})"}
     issues: list[dict] = []
     keys = _geokeys(tags.get(TAG_GEOKEYS))
@@ -107,7 +107,7 @@ def inspect(source) -> dict:
         buf = io.BytesIO()
         prev.save(buf, format="PNG")
         preview = buf.getvalue()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return {"error": f"the image could not be decoded ({e.__class__.__name__})"}
     return {"width": width, "height": height, "crs": crs, "pixel_size": [repr(p) for p in pixel] if pixel else None,
             "bounds": [repr(v) for v in bounds] if bounds else None, "issues": issues, "preview_png": preview}

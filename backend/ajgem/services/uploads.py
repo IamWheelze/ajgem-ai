@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,12 +15,12 @@ from ..errors import ApiError
 from ..models import Document, DocumentVersion, Record, UploadSession
 from . import audit
 from .access import ProjectAccess
-from .storage import ScannerUnavailable
 from .records import mark_answers_stale
+from .storage import ScannerUnavailable
 
 
 def _aware(dt: datetime) -> datetime:
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def _merge(ranges: list[list[int]], start: int, end: int) -> list[list[int]]:
@@ -55,7 +55,7 @@ def create_session(
         organisation_id=access.project.organisation_id, project_id=access.project.id, idempotency_key=idempotency_key,
         filename=filename, media_type=media_type, total_size=size, expected_sha256=sha256.lower(),
         rights_confirmed=True, rights_statement=rights_statement, received=[],
-        expires_at=datetime.now(timezone.utc) + timedelta(days=ctx.settings.upload_session_days),
+        expires_at=datetime.now(UTC) + timedelta(days=ctx.settings.upload_session_days),
         created_by=access.principal.user_id,
     )
     db.add(s)
@@ -67,7 +67,7 @@ def get_session(db: Session, access: ProjectAccess, session_id: str) -> UploadSe
     s = db.get(UploadSession, session_id)
     if s is None or s.project_id != access.project.id or s.created_by != access.principal.user_id:
         raise ApiError("AUTH_FORBIDDEN", "Resource not found or access denied")
-    if s.status == "open" and _aware(s.expires_at) <= datetime.now(timezone.utc):
+    if s.status == "open" and _aware(s.expires_at) <= datetime.now(UTC):
         s.status = "expired"
     if s.status == "expired":
         raise ApiError("UPLOAD_EXPIRED", "Upload session expired; start a new upload")
@@ -107,13 +107,12 @@ def detect_format(data: bytes, filename: str) -> str:
     name = filename.lower()
     if data.startswith(b"%PDF-"):
         return "pdf"
-    from ..science.gpkg import SQLITE_MAGIC, is_geopackage
-
     from ..science.geotiff import is_tiff
+    from ..science.gpkg import SQLITE_MAGIC, is_geopackage
 
     if is_tiff(data):
         return "geotiff"
-    if data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff"):
+    if data.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
         return "image"  # a scanned map without georeferencing: it can be georeferenced from control points (FR26)
     if data.startswith(SQLITE_MAGIC):
         if is_geopackage(data):

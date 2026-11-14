@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import struct
 import threading
 
 import pytest
+
 from ajgem.context import Settings
 from ajgem.models import DocumentVersion
 from ajgem.services.storage import ClamdScanner, ScannerUnavailable, scanner_from_settings
@@ -75,10 +77,8 @@ class FakeClamd:
                     conn.sendall(b"stream: OK\0")
 
     def close(self):
-        try:
+        with contextlib.suppress(OSError):
             self.sock.shutdown(socket.SHUT_RDWR)  # wakes the accept() thread so the port really closes
-        except OSError:
-            pass
         self.sock.close()
         self.thread.join(timeout=5)
 

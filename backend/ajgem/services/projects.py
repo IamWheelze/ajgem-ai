@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -146,7 +146,7 @@ def revoke_member(db: Session, access: ProjectAccess, user_id: str) -> None:
     m = db.scalar(select(Membership).where(Membership.project_id == access.project.id, Membership.user_id == user_id))
     if m is None:
         raise ApiError("NOT_FOUND", "Membership not found")
-    m.revoked_at = datetime.now(timezone.utc)
+    m.revoked_at = datetime.now(UTC)
     audit.record(db, access.principal, "membership.revoke", "membership", m.id, project_id=access.project.id)
 
 

@@ -30,7 +30,9 @@ def test_refresh_tokens_rotate_and_reuse_revokes_the_family():
     c = TestClient(mock.app)
     first = _sign_in(c)
     assert first["refresh_token"] and jwt.decode(first["id_token"], options={"verify_signature": False})["nonce"] == "n1"
-    refresh = lambda t: c.post("/token", data={"grant_type": "refresh_token", "refresh_token": t, "client_id": "ajgem-web"})
+    def refresh(t):
+        return c.post("/token", data={"grant_type": "refresh_token", "refresh_token": t, "client_id": "ajgem-web"})
+
     second = refresh(first["refresh_token"]).json()
     assert second["refresh_token"] != first["refresh_token"]
     claims = jwt.decode(second["id_token"], options={"verify_signature": False})

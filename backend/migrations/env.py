@@ -12,11 +12,10 @@ from pathlib import Path
 
 from alembic import context
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ajgem import models  # noqa: E402,F401  (registers every table on Base.metadata)
-from ajgem.db import Base, make_engine  # noqa: E402
+from ajgem import models  # noqa: F401  (registers every table on Base.metadata)
+from ajgem.db import Base, make_engine
 
 config = context.config
 target_metadata = Base.metadata

@@ -224,7 +224,7 @@ EXTRACTION_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["rows"],
     "properties": {"rows": {"type": "array", "items": {
         "type": "object", "additionalProperties": False, "required": ["sample_id", "analyte", "result", "unit"],
-        "properties": {k: _FIELD for k in ("sample_id", "analyte", "result", "unit")}}}},
+        "properties": dict.fromkeys(("sample_id", "analyte", "result", "unit"), _FIELD)}}},
 }
 
 

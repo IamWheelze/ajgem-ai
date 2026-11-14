@@ -48,7 +48,7 @@ class Line:
     def bbox(self) -> list[float] | None:
         if not self.words:
             return None
-        xs0, ys0, xs1, ys1 = zip(*(w.bbox for w in self.words))
+        xs0, ys0, xs1, ys1 = zip(*(w.bbox for w in self.words), strict=True)
         return [round(min(xs0), 2), round(min(ys0), 2), round(max(xs1), 2), round(max(ys1), 2)]
 
     @property

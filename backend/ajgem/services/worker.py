@@ -24,12 +24,12 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import or_, select, update
 
 from ..errors import ApiError
-from ..models import Job, JobTask
+from ..models import Job
 from . import processing
 from .access import load_principal
 from .projects import get_access
@@ -53,7 +53,7 @@ def worker_id() -> str:
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def claim_next(admin_sessions, wid: str, lease_seconds: int, now: datetime | None = None) -> Claim | None:
@@ -154,6 +154,6 @@ def run_forever(app_state, stop=lambda: False) -> None:
         try:
             if run_once(app_state, wid) is None:
                 time.sleep(app_state.ctx.settings.worker_poll_seconds)
-        except Exception:  # noqa: BLE001 - a worker must survive one bad job
+        except Exception:
             log.exception("worker %s: job processing failed; continuing", wid)
             time.sleep(app_state.ctx.settings.worker_poll_seconds)

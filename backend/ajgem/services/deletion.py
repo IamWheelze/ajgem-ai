@@ -22,7 +22,7 @@ of a request, scoped by organisation and entity ids.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -31,8 +31,8 @@ from ..context import Context
 from ..errors import ApiError
 from ..models import (
     AnswerSnapshot,
-    Checklist,
     AuditEvent,
+    Checklist,
     ConflictGroup,
     DeletionRequest,
     Document,
@@ -45,12 +45,12 @@ from ..models import (
     PageText,
     Project,
     ProjectConfigRevision,
-    Record,
     RasterOverlay,
+    Record,
     RecordRevision,
+    SourceAnchor,
     Target,
     TargetEvidence,
-    SourceAnchor,
     UploadSession,
 )
 from . import audit
@@ -75,7 +75,7 @@ def _privileged(db: Session, admin_sessions):
 def _backup_due(db: Session, project_id: str) -> str:
     cfg = current_config(db, project_id)
     days = int(((cfg.retention_policy if cfg else None) or {}).get("backup_days", DEFAULT_BACKUP_DAYS))
-    return (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
+    return (datetime.now(UTC) + timedelta(days=days)).date().isoformat()
 
 
 def _require_admin(access: ProjectAccess, reason: str) -> None:
@@ -88,9 +88,7 @@ def _purge_versions(db: Session, ctx: Context, admin_sessions, access: ProjectAc
                     versions: list[DocumentVersion], deletion_id: str) -> tuple[dict, set[str]]:
     """Remove everything derived from these versions. Returns (counts, entity ids whose audit detail to scrub)."""
     vids = {v.id for v in versions}
-    counts = {k: 0 for k in ("objects_deleted", "objects_retained_shared", "page_texts", "anchors", "records",
-                             "record_revisions", "import_previews", "jobs", "upload_sessions",
-                             "answers_redacted", "exports_revoked", "conflict_groups_changed")}
+    counts = dict.fromkeys(("objects_deleted", "objects_retained_shared", "page_texts", "anchors", "records", "record_revisions", "import_previews", "jobs", "upload_sessions", "answers_redacted", "exports_revoked", "conflict_groups_changed"), 0)
     scrub_ids: set[str] = set(vids)
     anchors = set(db.scalars(select(SourceAnchor.id).where(SourceAnchor.version_id.in_(vids))))
     records = set(db.scalars(select(Record.id).where(Record.source_version_id.in_(vids))))
@@ -297,7 +295,7 @@ def delete_project(db: Session, ctx: Context, admin_sessions, access: ProjectAcc
     scrub_ids.add(p.id)
     db.flush()
     # Revoke memberships last: under RLS, revocation hides the project's rows from this very transaction.
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for m in db.scalars(select(Membership).where(Membership.project_id == p.id)):
         m.revoked_at = m.revoked_at or now
     db.flush()

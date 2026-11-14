@@ -13,6 +13,7 @@ with no CRS there is no overlay.
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -99,7 +100,7 @@ def image(db: Session, ctx: Context, access: ProjectAccess, overlay_id: str, tok
 # ---------------------------------------------------------------- control-point georeferencing (FR26)
 def set_control_points(db: Session, access: ProjectAccess, overlay_id: str, crs: str, points: list[dict]) -> RasterOverlay:
     """Record control points and fit. Any edit withdraws a previous approval: the map needs reviewing again."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from ..science import georef
 
@@ -124,7 +125,7 @@ def set_control_points(db: Session, access: ProjectAccess, overlay_id: str, crs:
     was_approved = o.georef_status == "approved"
     o.control_points = [{"label": c.label, "col": c.col, "row": c.row, "x": c.x, "y": c.y} for c in cps]
     o.georef = {**result, "crs": crs.strip().upper() if crs.upper().startswith("EPSG:") else crs, "crs_name": resolved.name,
-                "fitted_at": datetime.now(timezone.utc).isoformat(),
+                "fitted_at": datetime.now(UTC).isoformat(),
                 "limitations": "Accuracy is the control-point residuals (RMSE, in CRS units) plus the accuracy of the "
                                "points' own map coordinates; an affine fit cannot correct paper distortion or a map's "
                                "own projection errors."}
@@ -143,7 +144,7 @@ def set_control_points(db: Session, access: ProjectAccess, overlay_id: str, crs:
 
 
 def approve_georef(db: Session, access: ProjectAccess, overlay_id: str) -> RasterOverlay:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from ..science import georef
 
@@ -170,7 +171,7 @@ def approve_georef(db: Session, access: ProjectAccess, overlay_id: str) -> Raste
                    "rmse": g["rmse"], "points": g["points"]}
     o.crs = g["crs"]
     o.status, o.georef_status = "valid", "approved"
-    o.approved_by, o.approved_at = access.principal.user_id, datetime.now(timezone.utc)
+    o.approved_by, o.approved_at = access.principal.user_id, datetime.now(UTC)
     o.issues = [i for i in (o.issues or []) if i.get("code") != "GEOREF_PENDING_REVIEW"]
     audit.record(db, access.principal, "overlay.georef_approve", "raster_overlay", o.id, project_id=o.project_id,
                  detail={"rmse": g["rmse"], "points": g["points"]})

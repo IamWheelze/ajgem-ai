@@ -44,7 +44,7 @@ class QualifiedValue:
     def censored(self) -> bool:
         return self.comparator is not Comparator.EQ
 
-    def scaled(self, factor: Decimal) -> "QualifiedValue":
+    def scaled(self, factor: Decimal) -> QualifiedValue:
         return QualifiedValue(self.raw, self.comparator, self.value * factor, self.warnings)
 
 

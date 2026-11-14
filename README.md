@@ -96,6 +96,12 @@ Tesseract is optional. Without it, scanned pages are flagged for manual entry, a
 python -m pytest
 ```
 
+Lint with the pinned ruff (CI runs the same check):
+
+```bash
+ruff check .
+```
+
 ```bash
 python scripts/seed_demo.py
 ```

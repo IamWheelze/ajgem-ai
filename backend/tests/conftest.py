@@ -11,9 +11,9 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ajgem.api.app import create_app  # noqa: E402
-from ajgem.context import Settings  # noqa: E402
-from ajgem.models import Organisation, User  # noqa: E402
+from ajgem.api.app import create_app
+from ajgem.context import Settings
+from ajgem.models import Organisation, User
 
 
 class Api:
@@ -183,7 +183,6 @@ def make_scanned_pdf(pages: list[list[str]], rotate: int = 0, dpi: int = 200) ->
     An empty list of lines yields a blank scanned page.
     """
     import pypdfium2 as pdfium
-    from PIL import Image
 
     images = []
     for page in pdfium.PdfDocument(make_pdf(pages)):

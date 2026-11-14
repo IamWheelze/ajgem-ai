@@ -101,7 +101,8 @@ def test_plain_sqlite_files_are_refused(team):
     con.execute("CREATE TABLE t (a)")
     con.commit()
     con.close()
-    data = open(path, "rb").read()
+    with open(path, "rb") as f:
+        data = f.read()
     os.unlink(path)
     r = team["analyst"].upload(team["pid"], data, "notes.db")
     assert r.json()["error"]["code"] == "INPUT_UNSUPPORTED" and "not a GeoPackage" in r.json()["error"]["message"]

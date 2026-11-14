@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from ..db import _apply_rls
 from ..errors import ApiError
 from ..models import AnswerSnapshot, ConflictGroup, PageText, Record, RecordRevision, SourceAnchor
 from ..science.analytes import ANALYTE_REGISTRY_VERSION, ConversionNotApproved, UnknownAnalyte, oxide_equivalent
@@ -22,7 +23,6 @@ from ..science.qualified import QUERY_OPS, Comparator, Outcome, QualifiedValue, 
 from ..science.units import UNIT_REGISTRY_VERSION, UnitError, convert, normalise_basis, normalise_unit
 from .access import ProjectAccess
 from .projects import registry_for
-from ..db import _apply_rls
 from .records import RevisionRow, revision, revision_rows, roomy_sorts, with_revisions
 
 THRESHOLD_TOOL = ("assay_threshold", "1.0.0")

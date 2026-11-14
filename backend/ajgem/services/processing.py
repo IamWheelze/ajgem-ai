@@ -10,8 +10,8 @@ from __future__ import annotations
 import io
 import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
 
 import pypdf
 from sqlalchemy import select
@@ -20,8 +20,7 @@ from sqlalchemy.orm import Session
 from ..context import Context
 from ..errors import ApiError
 from ..models import DocumentVersion, Job, JobTask, PageText, SourceAnchor
-from . import audit
-from . import costs, docx, ocr, sandbox
+from . import audit, costs, docx, ocr, sandbox
 from .access import ProjectAccess
 from .answers import provider_permitted
 from .llm import EXTRACTION_ADAPTER_VERSION, InvalidModelOutput, ProviderError, ProviderUnavailable
@@ -105,7 +104,7 @@ def approve_over_budget(db: Session, ctx: Context, access: ProjectAccess, job_id
     if len(reason.strip()) < 10:
         raise ApiError("INPUT_INVALID", "Give a reason of at least 10 characters for processing above budget")
     job.manifest = {**job.manifest, "budget_override": {"by": access.principal.user_id, "reason": reason.strip(),
-                                                         "at": datetime.now(timezone.utc).isoformat()}}
+                                                         "at": datetime.now(UTC).isoformat()}}
     audit.record(db, access.principal, "job.budget_override", "job", job.id, project_id=job.project_id,
                  detail={"reason": reason.strip(), "estimate": job.manifest.get("estimate"), "budget": job.manifest.get("budget")})
     job.state = "queued"
@@ -168,7 +167,7 @@ def _finish(job: Job, final: bool = True) -> None:
         job.state = "needs_review"
     else:
         job.state = "completed"
-    job.updated_at = datetime.now(timezone.utc)
+    job.updated_at = datetime.now(UTC)
     kept = {k: v for k, v in (job.manifest or {}).items() if k in ("estimate", "budget", "budget_override", "export_id")}
     job.manifest = {**kept,
         "units": [

@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from ajgem.models import AuditEvent, DocumentVersion, Record
 from ajgem.services.llm import Citation, ProviderAnswer, Segment
 
-from .conftest import CSV_MAPPING, Api, make_assay_csv, make_pdf
+from .conftest import CSV_MAPPING, make_assay_csv, make_pdf
 
 REVISED = (b"SampleID,Campaign,Easting,Northing,Certificate,Lab,Method,Basis,Li_ppm,Sn_ppm\n"
            b"KW-001,KW-2026,335010,995010,CERT-001-R1,Synthetic Lab,ICP-MS,dry,900,\n")

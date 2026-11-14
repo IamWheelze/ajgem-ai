@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -13,10 +13,10 @@ from sqlalchemy.orm import Session
 
 from ..errors import ApiError
 from ..models import AnswerSnapshot, ConflictGroup, Record, RecordRevision
-from ..science.dates import DateIssue, parse_date
-from ..science.dates import interval as date_interval
 from ..science import crs as crs_mod
 from ..science.analytes import AnalyteRegistry, UnknownAnalyte
+from ..science.dates import DateIssue, parse_date
+from ..science.dates import interval as date_interval
 from ..science.geometry import point_in_boundary
 from ..science.qualified import ParseIssue, parse_result
 from ..science.units import UnitError, convert, normalise_basis, normalise_unit
@@ -489,7 +489,7 @@ def decide(
         rec.status = "approved"
         rec.stale = False
     cur.decided_by = access.principal.user_id
-    cur.decided_at = datetime.now(timezone.utc)
+    cur.decided_at = datetime.now(UTC)
     if reason:
         cur.decision_reason = reason
     db.flush()
@@ -608,7 +608,7 @@ def resolve_conflict(db: Session, access: ProjectAccess, group_id: str, governin
     g.status = "resolved"
     g.reason = reason
     g.resolved_by = access.principal.user_id
-    g.resolved_at = datetime.now(timezone.utc)
+    g.resolved_at = datetime.now(UTC)
     g.version += 1
     db.flush()
     audit.record(db, access.principal, "conflict.resolve", "conflict", g.id, project_id=g.project_id,

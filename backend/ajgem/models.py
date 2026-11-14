@@ -152,7 +152,7 @@ class Document(Base):
     title: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
-    versions: Mapped[list["DocumentVersion"]] = relationship(
+    versions: Mapped[list[DocumentVersion]] = relationship(
         back_populates="document", order_by="DocumentVersion.version_no"
     )
 
@@ -241,7 +241,7 @@ class Job(Base):
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     claims: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    tasks: Mapped[list["JobTask"]] = relationship(order_by="JobTask.unit_key")
+    tasks: Mapped[list[JobTask]] = relationship(order_by="JobTask.unit_key")
 
 
 class JobTask(Base):
@@ -291,7 +291,7 @@ class Record(Base):
     analyte: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = _ts()
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
-    revisions: Mapped[list["RecordRevision"]] = relationship(order_by="RecordRevision.revision_no")
+    revisions: Mapped[list[RecordRevision]] = relationship(order_by="RecordRevision.revision_no")
 
 
 class RecordRevision(Base):

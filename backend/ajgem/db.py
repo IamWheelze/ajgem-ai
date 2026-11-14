@@ -9,7 +9,7 @@ passes through a float.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import JSON, Numeric, String, create_engine, event
@@ -23,7 +23,7 @@ def new_id() -> str:
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 PACK_MIN = 32  # lists shorter than this are stored as they are
@@ -66,7 +66,7 @@ def unpack_lists(doc):
     for k, v in doc.items():
         if isinstance(v, dict) and v.get("__packed__") == "shapes-v1":
             shapes = v["shapes"]
-            out[k] = [dict(zip(shapes[row[0]], row[1:])) for row in v["data"]]
+            out[k] = [dict(zip(shapes[row[0]], row[1:], strict=True)) for row in v["data"]]
         else:
             out[k] = v
     return out
@@ -107,7 +107,7 @@ class ExactDecimal(TypeDecorator):
 
 
 class Base(DeclarativeBase):
-    type_annotation_map = {dict: JSON, list: JSON}
+    type_annotation_map = {dict: JSON, list: JSON}  # noqa: RUF012 - read by SQLAlchemy, never mutated
 
 
 def _compact_json(value) -> str:

@@ -112,7 +112,7 @@ def test_no_cross_tenant_dedup_visibility(team, make_user, client):
 
     data = make_assay_csv(2)
     team["analyst"].upload(team["pid"], data, "same.csv")
-    org2, u2 = make_user("Org Two", "two@two.test")
+    _org2, u2 = make_user("Org Two", "two@two.test")
     B = Api(client, u2)
     pid2 = B.post("/projects", json={"name": "Elsewhere"}).json()["id"]
     B.post(f"/projects/{pid2}/members", json={"user_id": u2, "roles": ["admin", "analyst"]})

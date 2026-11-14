@@ -18,8 +18,8 @@ import os
 import socket
 import struct
 import time
-from urllib.parse import urlparse
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 class LocalObjectStore:

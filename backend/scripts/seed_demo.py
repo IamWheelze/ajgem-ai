@@ -19,11 +19,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from ajgem.api.app import create_app  # noqa: E402
-from ajgem.context import Settings  # noqa: E402
-from ajgem.models import Organisation, User  # noqa: E402
+from ajgem.api.app import create_app
+from ajgem.context import Settings
+from ajgem.models import Organisation, User
 
 BOUNDARY = {"type": "Polygon", "coordinates": [[[7.35, 8.9], [7.75, 8.9], [7.75, 9.25], [7.35, 9.25], [7.35, 8.9]]]}
 MAPPING = {
@@ -140,7 +140,7 @@ def main() -> None:
         s.commit()
         ids = {k: u.id for k, u in users.items()}
     with TestClient(app) as c:
-        admin, an, r1, r2 = (As(c, ids[k]) for k in ("admin", "analyst", "reviewer1", "reviewer2"))
+        admin, an, r1, _r2 = (As(c, ids[k]) for k in ("admin", "analyst", "reviewer1", "reviewer2"))
         pid = admin.post("/projects", {"name": "Kano Pegmatite (synthetic)"})["id"]
         for k, roles, exp in (("analyst", ["analyst"], True), ("reviewer1", ["reviewer"], True),
                               ("reviewer2", ["reviewer"], False), ("viewer", ["viewer"], False)):
